@@ -1,44 +1,59 @@
-# Auditoria técnica — Supervisório ISM
+# Auditoria tecnica - Supervisorio ISM
 
-Data da auditoria: 14/10/2026  
-Base analisada: commit `9ca2eda` do repositório `karenhelloisa98/Supervisorio_ISM`.
+Data da base original: 14/10/2026. O projeto foi estabilizado em duas etapas sobre a arquitetura PyQt5 existente. As faixas dos transdutores foram preservadas: P1-P4 em 0-10000 bar e DP em 0-200 bar.
 
-## Escopo e entrada real
+## Achados da Etapa 1
 
-O aplicativo principal utilizava os módulos da raiz (`mainwindow.py`, `daq_worker.py`, `pump_worker.py`, `oven_worker.py`, `tela_login.py`) e o fluxo de inicialização estava em `main2.py`. O arquivo `SupervisorioISM.spec` apontava para `main.py`, mas no estado original havia apenas `Versão1/main.py`; também referenciava `assets`, enquanto os recursos reais estavam em `Imagens` e nos `.ui` da raiz.
+| ID | Severidade | Problema | Tratamento |
+|---|---|---|---|
+| A-01 | Alta | Curvas e valores podiam associar DP ao indice errado. | Mapeamento por nome e curvas por canal. |
+| A-02 | Alta | Mapeamento Pu/Pd nao correspondia ao config. | Montante/jusante/DP explicitos em `config.json`. |
+| A-03 | Alta | Mistura de bar/psi e calculo fora de SI. | Conversoes centralizadas e calculo em Pa. |
+| A-04 | Alta | Falhas apareciam como zero. | `None` no processamento e `NaN` no grafico. |
+| A-05 | Alta | Stop podia manipular timer/DAQ na thread errada. | Stop enfileirado, cleanup idempotente e espera. |
+| A-06 | Alta | Falhas deixavam tarefa/logger parcialmente vivos. | Cleanup em erro e fechamento seguro. |
+| A-07 | Media | COM5/COM6 e timeouts eram fixos. | Configuracao e listagem de portas. |
+| A-08 | Media | Parsers e estados seriais sem cobertura. | Parsers testados e estados explicitos. |
+| A-09 | Media | Calibracao podia corromper no write direto. | Write atomico, timestamp e backup. |
+| A-10 | Media | CSV nao separava bruto/calibrado/status. | Colunas distintas e vazios preservados. |
+| A-11 | Media | Configuracao nao era validada no inicio. | Validacao de canais, faixas, unidades e dispositivos. |
+| A-12 | Media | Empacotamento nao carregava recursos corretos. | `main.py`, `.ui`, `Imagens` e dependencias no spec. |
+| A-13 | Baixa | Artefatos locais estavam no Git. | `.gitignore` e desindexacao sem apagar arquivos locais. |
 
-`Versão1` é uma implementação/experimento paralelo. Seus arquivos em `Versão1/tests` são scripts de demonstração, não testes pytest confiáveis. A execução inicial de `python -m pytest` falhou na coleta com `ModuleNotFoundError: No module named 'ui_main'`.
+## Implementacoes da Etapa 2
 
-## Problemas confirmados
+| ID | Implementacao | Evidencia |
+|---|---|---|
+| E2-01 | Maquina `STOPPED`, `STARTING`, `RUNNING`, `STOPPING`, `ERROR`; `RUNNING` depende do worker. | `operation_state.py`, `acquisition_controller.py`. |
+| E2-02 | Nova `QThread`/worker por partida, stop enfileirado e sem `terminate()`. | `acquisition_controller.py`, teste Qt de start/stop. |
+| E2-03 | Calibracao no menu, leitura atual, captura sem dado desabilitada, confirmacao/backup/timestamp. | `mainwindow.py`, `calibration_dialog.py`. |
+| E2-04 | Parametros editados no dialogo retornam para os campos usados pelos calculos. | `params_dialog.py`, `mainwindow.py`. |
+| E2-05 | DP medido e DP calculado separados em labels, curvas e registros. | `mainwindow.py`, `session_manager.py`. |
+| E2-06 | Portas/baudrate/timeout/stale editaveis; estados e reconexao com backoff. | `serial_settings_dialog.py`, workers seriais. |
+| E2-07 | Graficos usam timestamp, janelas temporais, buffer limitado e downsampling. | `mainwindow.py`. |
+| E2-08 | Ensaio isolado com metadata, CSV, eventos e origem REAL/SIMULATED. | `session_manager.py`, `session_dialog.py`. |
+| E2-09 | Eventos e alarmes centralizados para DAQ, sensores e serial. | `events.py`, `main2.py`. |
+| E2-10 | Login local sem credencial fixa, PBKDF2-SHA256 com salt e perfis. | `auth.py`, `tela_login.py`. |
 
-| ID | Criticidade | Evidência | Impacto | Correção nesta rodada |
-|---|---|---|---|---|
-| A-01 | Alta | `mainwindow.py` criava quatro curvas fixas e iterava cinco valores; `config.json` contém P1, P2, P3, P4 e DP. | DP podia ser associado à curva errada ou causar inconsistência de índices. | Curvas agora são associadas por nome; P1–P4 ficam no gráfico principal e o canal diferencial possui curva própria. |
-| A-02 | Alta | `calculate_permeability_realtime()` buscava `Pu` e `Pd`, inexistentes na configuração. | Permeabilidade não era calculada com o conjunto de canais atual. | Mapeamento explícito `upstream_channel`, `downstream_channel` e `differential_channel` em `config.json`. |
-| A-03 | Alta | Valores eram convertidos/apresentados como psi, apesar de `config.json` declarar bar; o cálculo usava fator psi diretamente. | Resultado dimensionalmente incorreto, potencialmente por fator significativo. | `units.py` centraliza conversões e os cálculos usam Pa; a unidade configurada volta apenas na apresentação. |
-| A-04 | Alta | Histórico gráfico usava `0.0` para leituras ausentes. | Falhas de sinal pareciam quedas reais de pressão. | Ausências permanecem `None` internamente e viram `NaN` somente no gráfico, produzindo lacunas. |
-| A-05 | Alta | `stop()` do DAQ era chamado diretamente pela interface apesar de o worker estar em `QThread`; havia risco de manipular timer/tarefa na thread errada. | Encerramento incompleto, thread órfã ou impossibilidade de reiniciar. | `QMetaObject.invokeMethod(..., QueuedConnection)`, limpeza idempotente e encerramento aguardado. |
-| A-06 | Alta | Exceções do DAQ podiam deixar tarefa/timer/logger parcialmente criados. | Recursos não liberados e aquisição duplicada no reinício. | Inicialização com cleanup em erro, estado ativo e `stop()` seguro. |
-| A-07 | Média | Bomba e estufa usavam COM5/COM6 fixos e timeout fixo. | Aplicação dependia de uma instalação específica e não sinalizava ausência prolongada de dados. | Portas/baudrate/timeouts em `config.json`, listagem de portas em `serial_utils.py` e estados `DISCONNECTED`, `CONNECTING`, `OK`, `STALE`, `INVALID`, `ERROR`. |
-| A-08 | Média | Parsers seriais não tinham cobertura automatizada; comunicação não validava finitude/estado de leituras. | Mensagens incompletas ou valores inválidos podiam entrar no fluxo sem diagnóstico claro. | Parsers preservados e testados; leituras inválidas e stale são sinalizadas. |
-| A-09 | Média | `calibration_store.py` gravava diretamente no arquivo final. | Falha durante a gravação podia corromper coeficientes. | Gravação temporária com `fsync` e `os.replace`, com timestamp UTC da alteração. |
-| A-10 | Média | CSV registrava correntes e valores de engenharia sem separar bruto, calibrado e status; `None` não era parte do contrato. | Rastreabilidade limitada e risco de interpretar ausência como zero. | Cabeçalho e linhas distinguem mA, bruto, calibrado e status; valores ausentes permanecem vazios. |
-| A-11 | Média | Configuração não era validada antes de criar hardware; faixas e nomes podiam divergir. | Erros apareciam tarde e poderiam afetar aquisição. | `config.py` valida taxa, canais únicos, LRV/URV, unidades, mapeamentos e dispositivos. |
-| A-12 | Média | `SupervisorioISM.spec` não incluía os recursos reais (`Imagens`, `.ui`) e apontava para entrada inexistente. | Executável poderia abrir sem interface/ícones ou nem iniciar. | Entrada oficial `main.py` adicionada e datas corrigidas no spec. |
-| A-13 | Baixa | Artefatos `build`, `dist`, `venv`, `__pycache__` e `logs` estavam acompanhados pelo Git. | Repositório pesado e risco de versionar dados/artefatos locais. | `.gitignore` adicionado; a remoção do acompanhamento preserva os arquivos locais. |
+## Testes executados
 
-## Riscos preservados deliberadamente
+- `python -m pytest -q`: 21 testes aprovados.
+- `python -m py_compile` nos modulos principais: aprovado.
+- Smoke test Qt offscreen: janela, timestamps, curvas DP distintas e modo simulado.
+- Smoke test do controlador: `STARTING -> RUNNING -> STOPPING -> STOPPED`.
 
-- As faixas de todos os transdutores foram mantidas exatamente como no `config.json`; não há evidência suficiente para alterar os valores físicos.
-- Nenhum comando de controle novo foi criado para bomba, estufa ou válvulas; apenas leitura, parser e ciclo de conexão foram tratados.
-- O parser serial existente foi mantido em espírito e apenas recebeu validação/estado, pois o protocolo real dos equipamentos não está documentado no repositório.
-- Não foi declarado suporte de produção: o funcionamento real depende de Windows, driver NI-DAQmx, hardware NI, portas seriais e testes operacionais.
+## Riscos e limites conhecidos
 
-## Pendências para a próxima rodada
+- A leitura serial continua sem comandos de atuacao; o protocolo real precisa ser confirmado com fabricante.
+- A UI valida fluxos, mas nao substitui intertravamentos fisicos.
+- O modelo de permeabilidade e valido apenas dentro das hipoteses registradas em `calc.py` e no config.
+- O login local possui primeiro administrador, mas criacao administrativa de operadores ainda e procedimento controlado fora da UI.
 
-1. Integrar `CalibrationDialog` e `ParamsDialog` ao fluxo principal, sem manter duas fontes de parâmetros.
-2. Definir com a engenharia o modelo de fluido e validar a equação para cada tipo de ensaio.
-3. Executar testes de integração com NI-DAQmx, Vindum e estufa reais, incluindo desconexão durante operação.
-4. Confirmar unidades/faixas dos transdutores e a semântica física de P1–P4/DP.
-5. Implementar registro completo de ensaio (ID, temperatura, vazão, estados, parâmetros, configuração e calibração) sem bloquear a UI.
-6. Criar build Windows em ambiente com todas as dependências e verificar o executável gerado.
+## Pendente de homologacao em hardware
+
+1. Driver NI-DAQmx, tarefa real, canais fisicos e comportamento de desconexao.
+2. Identificacao/baudrate/formato das mensagens da bomba Vindum e estufa.
+3. Confirmacao metrologica das faixas/unidades e calibracao ZERO/SPAN.
+4. Conferencia fisica de P1/P2/P3/P4/DP e comparacao DP medido versus calculado.
+5. Validacao da permeabilidade com fluido, viscosidade e procedimento aprovados.
+6. Execucao do checklist em `docs/TESTES_HARDWARE.md` com evidencias.

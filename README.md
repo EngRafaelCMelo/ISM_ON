@@ -1,17 +1,15 @@
-# Supervisório ISM
+# Supervisorio ISM
 
-Aplicação desktop PyQt5 para supervisão de ensaios de coreflooding, com aquisição de pressão por NI-DAQ, comunicação serial com bomba Vindum e estufa, calibração, cálculos científicos e exportação CSV.
+Aplicacao desktop PyQt5 para supervisao de ensaios de coreflooding, com aquisicao de pressao por NI-DAQmx, comunicacao serial com bomba/estufa, calibracao, calculos, graficos temporais e registro rastreavel de ensaios.
 
-Esta primeira rodada estabiliza o software sem alterar as faixas atuais dos transdutores: P1–P4 permanecem em 0–10000 bar e DP em 0–200 bar até validação pelas especificações físicas.
+Esta etapa preserva as faixas existentes de `config.json` (P1-P4: 0-10000 bar; DP: 0-200 bar) e nao cria comandos de atuacao para os equipamentos.
 
 ## Requisitos
 
-- Windows para a integração real com NI-DAQmx e equipamentos seriais.
-- Python 3.10 ou superior.
-- Driver NI-DAQmx e hardware configurado para aquisição real.
+- Windows para NI-DAQmx e equipamentos reais.
+- Python 3.10+.
 - PyQt5, pyqtgraph, NumPy, nidaqmx e pyserial.
-
-Instalação:
+- Para testes/build: `pytest` e `pyinstaller`.
 
 ```powershell
 python -m venv .venv
@@ -19,57 +17,60 @@ python -m venv .venv
 python -m pip install -r requirements-dev.txt
 ```
 
-## Execução
+## Execucao
 
 ```powershell
 python main.py
 ```
 
-O ponto de entrada oficial é `main.py`; `main2.py` permanece como módulo de compatibilidade. A aplicação valida `config.json` antes de abrir o DAQ.
+No primeiro acesso, o sistema solicita a criacao do primeiro administrador. Use uma senha com pelo menos oito caracteres. O arquivo `users.json` e local, usa PBKDF2-SHA256 com salt e nao deve ser versionado.
 
-Para testar sem NI-DAQ, bomba ou estufa:
+Para operar sem NI-DAQ, bomba ou estufa:
 
 ```powershell
 python main.py --simulate
 ```
 
-O título e o status da janela exibem `[MODO SIMULACAO]`. As mensagens geradas carregam `source=SIMULATED` e nunca são misturadas silenciosamente com uma aquisição real.
+O modo simulado aparece no titulo, nos payloads e no metadata dos ensaios. Dados simulados nunca sao misturados silenciosamente com ensaios reais.
 
-## Configuração
+## Operacao integrada
 
-`config.json` centraliza taxa de aquisição, canais físicos, LRV/URV, unidades, mapeamento de montante/jusante/DP, modelo de fluido, portas seriais e timeouts. As portas atuais COM5/COM6 foram preservadas como valores padrão, mas agora podem ser alteradas no arquivo.
+1. Confirme o login.
+2. Inicie o sistema e aguarde o estado `RUNNING`; esse estado so e emitido apos confirmacao do worker.
+3. Use o menu `Operacao` para abrir parametros, calibracao ou comunicacao serial.
+4. Conecte bomba/estufa somente depois de conferir portas e baudrate.
+5. Clique em `Iniciar Experimento`, informe os metadados e encerre o registro ao final.
+6. Pare o sistema e aguarde `STOPPED` antes de fechar ou alterar calibracao/configuracao.
 
-O processamento usa SI internamente. Pressões configuradas em bar são convertidas para Pa nos cálculos e voltam à unidade configurada apenas na apresentação. A lei de Darcy em tempo real é permitida somente para `incompressible_liquid`; ensaios com gás devem usar o modelo pulse-decay e suas hipóteses experimentais.
+DP medido e DP calculado permanecem separados na tela e no CSV. A fonte usada na permeabilidade pode ser selecionada na combobox existente. O mapeamento de montante/jusante continua em `config.json` e nao presume a ordem fisica dos canais.
 
-## Testes
+## Persistencia
+
+- `config.json`: canais, faixas, unidades, mapeamento, dispositivos e janelas de grafico.
+- `calibration.json`: coeficientes e volumes; salvamentos sao atomicos e criam backup.
+- `users.json`: usuarios locais e perfis `admin`/`operator`.
+- `ensaios/<data>_<amostra>_<id>/`: `metadata.json`, `measurements.csv` e `events.log`.
+- `logs/`: CSV legado do worker DAQ, mantendo mA, bruto, calibrado e status.
+
+No executavel empacotado, `config.json` e os dados locais sao copiados para a pasta `data/` ao lado do `.exe`, evitando gravacao em `_MEIPASS` temporario.
+
+## Testes e build
 
 ```powershell
-python -m pytest
-```
-
-Os testes não exigem hardware e cobrem conversão 4–20 mA, pressão, vazão, calibração ZERO/SPAN, porosidade, Darcy, pulse-decay, validação de configuração, CSV, parsers seriais e modo simulação.
-
-## Empacotamento
-
-Com dependências de desenvolvimento instaladas:
-
-```powershell
+python -m pytest -q
+python -m py_compile operation_state.py auth.py events.py session_manager.py session_dialog.py serial_settings_dialog.py acquisition_controller.py mainwindow.py main2.py
 pyinstaller --clean --noconfirm SupervisorioISM.spec
 ```
 
-O spec inclui `config.json`, os dois arquivos `.ui`, a pasta `Imagens`, metadados do NI-DAQmx e dependências dinâmicas. Um build não substitui a validação com driver NI-DAQmx, portas COM e equipamentos reais.
+Os testes nao dependem de NI-DAQ ou portas seriais reais. O build Windows ainda precisa ser validado no computador de operacao.
 
-## Organização
+## Documentacao
 
-- `main.py` / `main2.py`: inicialização e ciclo de vida das threads.
-- `mainwindow.py`: apresentação e atualização da interface.
-- `daq_worker.py`: aquisição NI-DAQ e conversão/calibração dos canais.
-- `simulation_worker.py`: fonte sintética explicitamente identificada.
-- `pump_worker.py` / `oven_worker.py`: comunicação serial e parsers.
-- `units.py`, `calc.py`, `config.py`: unidades, cálculos e validação sem dependência da UI.
-- `calibration_store.py`, `logger_csv.py`: persistência e rastreabilidade.
-- `tests/`: testes automatizados sem hardware.
+- [Arquitetura](docs/ARQUITETURA.md)
+- [Operacao](docs/OPERACAO.md)
+- [Checklist de testes de hardware](docs/TESTES_HARDWARE.md)
+- [Auditoria tecnica](docs/AUDITORIA_TECNICA.md)
 
-## Limitações conhecidas
+## Limitacoes e homologacao
 
-Ainda é necessária validação operacional com NI-DAQmx, bomba Vindum, estufa, protocolo serial real e especificações físicas dos transdutores. Os diálogos legados de parâmetros/calibração ainda não estão conectados ao fluxo principal de `main.py` e devem ser integrados em uma próxima rodada, com revisão de permissões e rastreabilidade do ensaio.
+O modo simulacao e funcional para validar fluxo, estados, graficos, persistencia e calculos. Ainda nao e evidencia de funcionamento industrial. Permanecem pendentes: driver NI-DAQmx, canais fisicos, protocolo serial Vindum/estufa, unidades/faixas confirmadas pela engenharia, comportamento em desconexao real e validacao metrologica da calibracao/permeabilidade.
