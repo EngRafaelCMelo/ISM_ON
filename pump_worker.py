@@ -1,4 +1,13 @@
+from __future__ import annotations
+
+import math
+import re
+import time
+
 from PyQt5.QtCore import QThread, pyqtSignal
+
+from device_state import CONNECTING, DISCONNECTED, ERROR, INVALID, OK, STALE
+from units import flow_to_m3s
 
 try:
     import serial
@@ -7,55 +16,66 @@ except Exception:
 
 
 class PumpWorker(QThread):
-    flow_received = pyqtSignal(float)   # vazão em m³/s
+    flow_received = pyqtSignal(float)
     raw_received = pyqtSignal(str)
     status = pyqtSignal(str)
+    state = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, port="COM5", baudrate=9600, parent=None):
+    def __init__(self, port="COM5", baudrate=9600, timeout_s=1.0, stale_after_s=3.0, parent=None):
         super().__init__(parent)
         self.port = port
-        self.baudrate = baudrate
+        self.baudrate = int(baudrate)
+        self.timeout_s = float(timeout_s)
+        self.stale_after_s = float(stale_after_s)
         self._running = False
         self._ser = None
+        self._last_valid_at = None
+
+    def start(self, priority=QThread.InheritPriority):
+        if self.isRunning():
+            return
+        super().start(priority)
 
     def run(self):
         if serial is None:
-            self.error.emit("pyserial não está instalado.")
+            self._emit_error("pyserial nao esta instalado.")
             return
-
         self._running = True
-
+        self._last_valid_at = None
+        self.state.emit(CONNECTING)
+        self.status.emit(f"Conectando em {self.port}")
         try:
-            self._ser = serial.Serial(self.port, self.baudrate, timeout=1)
+            self._ser = serial.Serial(self.port, self.baudrate, timeout=self.timeout_s)
+            self.state.emit(OK)
             self.status.emit(f"Bomba conectada em {self.port}")
-        except Exception as e:
-            self.error.emit(f"Falha ao abrir porta da bomba ({self.port}): {e}")
-            return
-
-        while self._running:
-            try:
+            while self._running:
                 line = self._ser.readline().decode(errors="ignore").strip()
                 if not line:
+                    self._mark_stale_if_needed()
                     continue
-
                 self.raw_received.emit(line)
-
                 flow_m3s = self.parse_flow(line)
-                if flow_m3s is not None:
-                    self.flow_received.emit(flow_m3s)
-
-            except Exception as e:
-                self.error.emit(f"Erro lendo bomba: {e}")
-                break
-
-        self._close_serial()
-        self.status.emit("Bomba desconectada")
+                if flow_m3s is None or not math.isfinite(flow_m3s) or flow_m3s < 0:
+                    self.state.emit(INVALID)
+                    continue
+                self._last_valid_at = time.monotonic()
+                self.state.emit(OK)
+                self.flow_received.emit(flow_m3s)
+        except Exception as exc:
+            if self._running:
+                self._emit_error(f"Falha lendo bomba: {exc}")
+        finally:
+            self._running = False
+            self._close_serial()
+            self.state.emit(DISCONNECTED)
+            self.status.emit("Bomba desconectada")
 
     def stop(self):
         self._running = False
-        self.wait(1500)
         self._close_serial()
+        if self.isRunning() and QThread.currentThread() != self:
+            self.wait(1500)
 
     def _close_serial(self):
         try:
@@ -65,30 +85,27 @@ class PumpWorker(QThread):
             pass
         self._ser = None
 
+    def _mark_stale_if_needed(self):
+        if self._last_valid_at is not None and time.monotonic() - self._last_valid_at > self.stale_after_s:
+            self.state.emit(STALE)
+            self.status.emit("Bomba sem leitura valida (STALE)")
+
+    def _emit_error(self, message: str):
+        self.state.emit(ERROR)
+        self.status.emit("Bomba em erro")
+        self.error.emit(message)
+
     @staticmethod
     def parse_flow(line: str):
-        """
-        Tenta extrair vazão da string e converter para m³/s.
-
-        Exemplos aceitos:
-        - FLOW: 1.23
-        - FLOW: 1.23 ml/min
-        - 1.23 ml/min
-        - Q=0.5 mL/min
-        """
-        s = line.strip().lower().replace(",", ".")
-
-        # procura primeiro por ml/min
-        import re
-        m = re.search(r'([-+]?\d*\.?\d+)\s*(ml/min|mlm|min)', s)
-        if m:
-            value_ml_min = float(m.group(1))
-            return value_ml_min * 1e-6 / 60.0
-
-        # tenta algo do tipo "flow: 1.23"
-        m = re.search(r'flow\s*[:=]\s*([-+]?\d*\.?\d+)', s)
-        if m:
-            value_ml_min = float(m.group(1))
-            return value_ml_min * 1e-6 / 60.0
-
+        """Extrai vazao e retorna m3/s; sem unidade, interpreta como mL/min."""
+        text = line.strip().lower().replace(",", ".")
+        match = re.search(r"([-+]?\d*\.?\d+)\s*(m3/s|m3s|l/s|l/min|ml/min)", text)
+        if match:
+            return flow_to_m3s(float(match.group(1)), match.group(2))
+        match = re.search(r"flow\s*[:=]\s*([-+]?\d*\.?\d+)", text)
+        if match:
+            return flow_to_m3s(float(match.group(1)), "ml/min")
+        match = re.search(r"q\s*=\s*([-+]?\d*\.?\d+)\s*ml/min", text)
+        if match:
+            return flow_to_m3s(float(match.group(1)), "ml/min")
         return None

@@ -12,7 +12,7 @@ class Login(QDialog):
     def __init__(self):
         super(Login, self).__init__()
         
-        caminho_ui = os.path.join(os.path.dirname(__file__), "tela_login.ui")
+        caminho_ui = resource_path("tela_login.ui")
         uic.loadUi(caminho_ui, self)
         
         self.setWindowTitle("Login do Sistema")

@@ -1,432 +1,377 @@
+from __future__ import annotations
+
+import math
 import os
 import sys
-import pyqtgraph as pg
-import numpy as np
+import time
 from collections import deque
-from typing import List, Dict, Optional
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import pyqtgraph as pg
 from PyQt5 import uic
+from PyQt5.QtCore import QDate, QTime, QTimer
 from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import QMainWindow
-from PyQt5.QtCore import Qt, QTimer, QTime, QDate
-from PyQt5.QtWidgets import (QMessageBox)
-from logger_csv import CsvLogger
+from PyQt5.QtWidgets import QMainWindow, QMessageBox
+
+from calc import permeability_darcy
+from units import pressure_from_pa, pressure_to_pa
+
 
 def resource_path(relative_path: str) -> str:
     base = getattr(sys, "_MEIPASS", os.path.abspath("."))
     return os.path.join(base, relative_path)
 
-class TelaPrincipal(QMainWindow):
-    def __init__(self, channel_names: List[str]):
-        super().__init__()
-        
-        caminho_ui = os.path.join(os.path.dirname(__file__), "mainwindow.ui")
-        try:
-            uic.loadUi(caminho_ui, self)
-            print("Sucesso: Interface do Supervisório carregada!")
-        except Exception as e:
-            print(f"ERRO CRÍTICO ao carregar o UI: {e}")
-            raise
 
-        self.set_running(False)
-        self.setWindowTitle("Sistema Coreflooding - Supervisório")
-        nome_logo = "Imagens/logo_ism_transp.png"
-        caminho_logo = resource_path(nome_logo)
-        if os.path.exists(caminho_logo):
-            self.setWindowIcon(QIcon(caminho_logo))
-        else:
-            print(f"Aviso: Arquivo de logo não encontrado em {caminho_logo}")
+class TelaPrincipal(QMainWindow):
+    """Janela principal; hardware e calculos permanecem fora da UI."""
+
+    def __init__(
+        self,
+        channel_names: List[str],
+        channel_configs: Optional[List[Dict[str, Any]]] = None,
+        calculation_config: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__()
+        uic.loadUi(resource_path("mainwindow.ui"), self)
+        self.setWindowTitle("Sistema Coreflooding - Supervisorio")
+        logo_path = resource_path("Imagens/logo_ism_transp.png")
+        if os.path.exists(logo_path):
+            self.setWindowIcon(QIcon(logo_path))
         self.Paginas.setCurrentIndex(0)
 
+        self.channel_names = list(channel_names)
+        channel_configs = channel_configs or []
+        self.channel_units = {
+            item.get("name"): item.get("unit", "bar")
+            for item in channel_configs
+            if item.get("name")
+        }
+        for name in self.channel_names:
+            self.channel_units.setdefault(name, "bar")
+
+        calculation_config = calculation_config or {}
+        permeability_config = calculation_config.get("permeability", calculation_config)
+        self.upstream_channel = permeability_config.get("upstream_channel")
+        self.downstream_channel = permeability_config.get("downstream_channel")
+        self.differential_channel = permeability_config.get("differential_channel")
+        self.fluid_model = permeability_config.get("fluid_model", "incompressible_liquid")
+        self.data_stale_after_s = float(calculation_config.get("data_stale_after_s", 2.0))
+        self.simulation_mode = False
+        if self.differential_channel is None and "DP" in self.channel_names:
+            self.differential_channel = "DP"
+
+        self.channel_widgets = {
+            "P1": self.P1,
+            "P2": self.P2,
+            "P3": self.P3,
+            "P4": self.P4,
+            "DP": self.DP,
+        }
+        self.name_to_index = {name: index for index, name in enumerate(self.channel_names)}
+        self.value_labels = [self.channel_widgets.get(name) for name in self.channel_names]
+        self.status_labels = list(self.value_labels)
+
+        self.latest_eng_corr: Dict[str, Optional[float]] = {}
+        self.latest_eng_raw: Dict[str, Optional[float]] = {}
+        self.channel_status: Dict[str, str] = {}
+        self.latest_ts_ms: Optional[int] = None
+
+        self.current_pump_flow_m3s: Optional[float] = None
+        self.current_pump_raw = "-"
+        self.current_pump_status = "DISCONNECTED"
+        self.current_pump_ts_ms: Optional[int] = None
+        self.current_oven_temp_c: Optional[float] = None
+        self.current_oven_raw = "-"
+        self.current_oven_status = "DISCONNECTED"
+        self.current_oven_ts_ms: Optional[int] = None
+
+        self.max_points = 5 * 60 * 10
+        self.t = deque(maxlen=self.max_points)
+        self.y = {name: deque(maxlen=self.max_points) for name in self.channel_names}
+        self.dp_data = deque(maxlen=self.max_points)
+        self.k_t = deque(maxlen=self.max_points)
+        self.k_y = deque(maxlen=self.max_points)
+        self.temp_t = deque(maxlen=self.max_points)
+        self.temp_y = deque(maxlen=self.max_points)
+
+        self.configurar_estilo_graficos()
         self.timer_relogio = QTimer(self)
         self.timer_relogio.timeout.connect(self.atualizar_data_hora)
         self.timer_relogio.start(1000)
         self.atualizar_data_hora()
-        self.timer_daq = QTimer(self)
 
-        # ===== Canais =====
-        self.channel_names = channel_names
-        self.name_to_index: Dict[str, int] = {n: i for i, n in enumerate(channel_names)}
-        self.n = len(channel_names)
-
-        self.value_labels = [ #Mostrará os dados nos canais
-            self.P1,  
-            self.P2,  
-            self.P3,  
-            self.P4,
-            self.DP
-        ]
-
-        self.status_labels = [
-            self.P1,  
-            self.P2,  
-            self.P3,  
-            self.P4,
-            self.DP
-        ]
-
-        # ===== Memória dos últimos dados DAQ =====
-        self.latest_eng_corr: Dict[str, Optional[float]] = {}
-        self.latest_eng_raw: Dict[str, Optional[float]] = {}
-        self.latest_ts_ms: Optional[int] = None
-
-        # ===== Estado da bomba =====
-        self.current_pump_flow_m3s: Optional[float] = None
-        self.current_pump_raw: str = "-" 
-        self.current_pump_status: str = "Desconectada" 
-
-        # ===== Estado da estufa =====
-        self.current_oven_temp_c: Optional[float] = None
-        self.current_oven_raw: str = "-" 
-        self.current_oven_status: str = "Desconectada" 
-
-        # ===== Históricos (5 min @ 10 Hz) =====
-        self.max_points = 5 * 60 * 10
-
-        # Pressões
-        self.t = deque(maxlen=self.max_points)
-        self.y = [deque(maxlen=self.max_points) for _ in range(self.n)]
-
-        # Permeabilidade
-        self.k_t = deque(maxlen=self.max_points)
-        self.k_y = deque(maxlen=self.max_points)
-
-        # Temperatura
-        self.temp_t = deque(maxlen=self.max_points)
-        self.temp_y = deque(maxlen=self.max_points)
-
-        # CONFIGURAÇÃO DOS GRÁFICOS 
-        self.configurar_estilo_graficos()
-        self.x_data = [] #eixo do tempo (amostras)
-        self.p1_data = []
-        self.p2_data = []
-        self.p3_data = []
-        self.p4_data = []
-        self.dp_data = []
-        self.temp_data = []
-        self.k_data = []
-        self.amostra_atual = 0
-
-        # CONEXÕES DE BOTÕES
         self.btn_operacao.clicked.connect(self.ir_para_operacao)
         self.btn_graficos.clicked.connect(self.ir_para_graficos)
-        self.btn_start.clicked.connect(self.iniciar_daq)
-        self.btn_stop.clicked.connect(self.parar_daq)
+        self.btn_start.clicked.connect(lambda: self.set_running(True))
+        self.btn_stop.clicked.connect(lambda: self.set_running(False))
+        self.set_running(False)
 
     def atualizar_data_hora(self):
-        data_atual = QDate.currentDate().toString("dd/MM/yyyy")
-        hora_atual = QTime.currentTime().toString("HH:mm:ss")
-        self.lbl_data.setText(data_atual)
-        self.lbl_hora.setText(hora_atual)
+        self.lbl_data.setText(QDate.currentDate().toString("dd/MM/yyyy"))
+        self.lbl_hora.setText(QTime.currentTime().toString("HH:mm:ss"))
 
     def configurar_estilo_graficos(self):
-        pen_p1 = pg.mkPen(color='b', width=2)
-        pen_p2 = pg.mkPen(color='r', width=2)
-        pen_p3 = pg.mkPen(color='g', width=2)
-        pen_p4 = pg.mkPen(color='m', width=2)
-        pen_dp = pg.mkPen(color='k', width=2)   
-        pen_temp = pg.mkPen(color='k', width=2) 
-        pen_k = pg.mkPen(color='k', width=2)    
-
-        # Gráfico de Pressões (Superior Esquerda)
-        self.widget_plot_pressao.setBackground('w')
+        colors = ["b", "r", "g", "m", "c", "y"]
+        self.widget_plot_pressao.setBackground("w")
         self.widget_plot_pressao.showGrid(x=True, y=True, alpha=0.3)
-        self.widget_plot_pressao.setLabel('left', 'Pressão', units='psi')
-        self.widget_plot_pressao.setLabel('bottom','Amostras')
-        self.widget_plot_pressao.addLegend(offset=(10,10))
+        self.widget_plot_pressao.setLabel("left", "Pressao")
+        self.widget_plot_pressao.setLabel("bottom", "Amostras")
+        self.widget_plot_pressao.addLegend(offset=(10, 10))
+        self.pressure_curves = {}
+        color_index = 0
+        for name in self.channel_names:
+            if name == self.differential_channel:
+                continue
+            curve = self.widget_plot_pressao.plot(
+                [], [], pen=pg.mkPen(color=colors[color_index % len(colors)], width=2), name=name
+            )
+            self.pressure_curves[name] = curve
+            color_index += 1
+        self.curves = list(self.pressure_curves.values())
 
-        self.curva_p1 = self.widget_plot_pressao.plot([], [], pen=pen_p1, name="P1")
-        self.curva_p2 = self.widget_plot_pressao.plot([], [], pen=pen_p2, name="P2")
-        self.curva_p3 = self.widget_plot_pressao.plot([], [], pen=pen_p3, name="P3")
-        self.curva_p4 = self.widget_plot_pressao.plot([], [], pen=pen_p4, name="P4")
-
-        self.curves = [self.curva_p1, self.curva_p2, self.curva_p3, self.curva_p4]
-        
-        #Gráfico de Pressão Diferencial (Superior Direta)
-        self.widget_plot_pressao_dp.setBackground('w')
+        self.widget_plot_pressao_dp.setBackground("w")
         self.widget_plot_pressao_dp.showGrid(x=True, y=True, alpha=0.3)
-        self.widget_plot_pressao_dp.setLabel('left', 'Pressão Diferencial', units='psi')
-        self.widget_plot_pressao_dp.setLabel('bottom','Amostras')
-        self.widget_plot_pressao_dp.addLegend(offset=(10,10))
-        self.curva_dp = self.widget_plot_pressao_dp.plot([], [], pen=pen_dp, name="DP")
+        self.widget_plot_pressao_dp.setLabel("left", "Pressao Diferencial")
+        self.widget_plot_pressao_dp.setLabel("bottom", "Amostras")
+        self.widget_plot_pressao_dp.addLegend(offset=(10, 10))
+        self.curva_dp = self.widget_plot_pressao_dp.plot([], [], pen=pg.mkPen("k", width=2), name="DP")
 
-        # Gráfico de Temperatura (Inferior Esquerda)
-        self.widget_plot_temp.setBackground('w')
+        self.widget_plot_temp.setBackground("w")
         self.widget_plot_temp.showGrid(x=True, y=True, alpha=0.3)
-        self.widget_plot_temp.setLabel('left', 'Temperatura', units='°C')
-        self.widget_plot_temp.setLabel('bottom', 'Amostras')
-        self.curva_temp = self.widget_plot_temp.plot([], [], pen=pen_temp, name='temp')
+        self.widget_plot_temp.setLabel("left", "Temperatura", units="C")
+        self.widget_plot_temp.setLabel("bottom", "Amostras")
+        self.curva_temp = self.widget_plot_temp.plot([], [], pen=pg.mkPen("k", width=2), name="temp")
 
-        # Gráfico de Permeabilidade (Inferior Direita)
-        self.widget_plot_k.setBackground('w')
+        self.widget_plot_k.setBackground("w")
         self.widget_plot_k.showGrid(x=True, y=True, alpha=0.3)
-        self.widget_plot_k.setLabel('left', 'Permeabilidade', units='mD')
-        self.widget_plot_k.setLabel('bottom', 'Amostras')
-        self.curva_k = self.widget_plot_k.plot([], [], pen=pen_k)
+        self.widget_plot_k.setLabel("left", "Permeabilidade", units="mD")
+        self.widget_plot_k.setLabel("bottom", "Amostras")
+        self.curva_k = self.widget_plot_k.plot([], [], pen=pg.mkPen("k", width=2), name="k")
 
-    # ===== FUNÇÕES DE NAVEGAÇÃO E CONTROLE =====
     def ir_para_operacao(self):
         self.Paginas.setCurrentIndex(0)
-        print("Página: Operação e Controle")
 
     def ir_para_graficos(self):
         self.Paginas.setCurrentIndex(1)
-        print("Página: Análise de Gráficos")
 
     def set_running(self, running: bool):
         self.btn_start.setEnabled(not running)
         self.btn_stop.setEnabled(running)
-
-        if running:
-            self.lbl_conn.setText("Status: Rodando")
-            self.lbl_conn.setStyleSheet("""
-            color: #000; 
-            font-weight: bold; 
-            background-color: #0F0; 
-            border-radius: 10px;
-            padding: 2px;
-            qproperty-alignment: 'AlignCenter';
-            """)
-        else:
-            self.lbl_conn.setText("Status: Parado")
-            self.lbl_conn.setStyleSheet("""
-            color: white; 
-            font-weight: bold; 
-            background-color: black; 
-            border-radius: 10px;
-            padding: 2px;
-            qproperty-alignment: 'AlignCenter';
-            """)
+        prefix = "SIMULACAO - " if self.simulation_mode else ""
+        self.lbl_conn.setText(prefix + ("Status: Rodando" if running else "Status: Parado"))
+        self.lbl_conn.setStyleSheet(
+            "color: #000; font-weight: bold; background-color: #0F0; padding: 2px;"
+            if running
+            else "color: white; font-weight: bold; background-color: black; padding: 2px;"
+        )
 
     def iniciar_daq(self):
-        self.timer_daq.start(200)
         self.set_running(True)
-        print("Aquisicao de dados iniciada...")
 
     def parar_daq(self):
-        self.timer_daq.stop()
         self.set_running(False)
-        print("Aquisicao de dados parada...")
 
-    # =========================================================
-    # UTILIDADES
-    # =========================================================
-    def show_error(self, msg: str):
-        QMessageBox.critical(self, "Erro", msg)
+    def set_simulation_mode(self, enabled: bool):
+        self.simulation_mode = bool(enabled)
+        suffix = " [MODO SIMULACAO]" if self.simulation_mode else ""
+        self.setWindowTitle("Sistema Coreflooding - Supervisorio" + suffix)
+        self.set_running(False)
 
-    # =========================================================
-    # BOMBA
-    # =========================================================
+    def show_error(self, message: str):
+        QMessageBox.critical(self, "Erro", message)
+
     def update_pump_flow(self, value_m3s: float):
-        self.current_pump_flow_m3s = value_m3s
-        if self.flow_source.currentIndex() == 1:
-            self.input_q.setValue(value_m3s)
+        if math.isfinite(value_m3s) and value_m3s >= 0:
+            self.current_pump_flow_m3s = value_m3s
+            self.current_pump_ts_ms = int(time.time() * 1000)
+            if self.flow_source.currentIndex() == 1:
+                self.input_q.setValue(value_m3s)
 
     def update_pump_raw(self, text: str):
         self.current_pump_raw = text
-        self.lbl_pump_raw.setText(f"Última mensagem: {text}")
+        self.lbl_pump_raw.setText(f"Ultima mensagem: {text}")
 
     def update_pump_status(self, text: str):
         self.current_pump_status = text
         self.lbl_pump_status.setText(f"Status: {text}")
 
     def update_pump_error(self, text: str):
-        self.current_pump_status = f"Erro: {text}"
+        self.current_pump_status = "ERROR"
         self.lbl_pump_status.setText("Status: Erro")
-        self.lbl_pump_raw.setText(f"Última mensagem: {text}")
+        self.lbl_pump_raw.setText(f"Ultima mensagem: {text}")
 
-    # =========================================================
-    # ESTUFA
-    # =========================================================
     def update_oven_temp(self, value_c: float):
-        self.current_oven_temp_c = value_c
-        if self.temp_source.currentIndex() == 1:
-            self.lbl_temp.setText(f"{value_c:.2f} °C")
+        if math.isfinite(value_c):
+            self.current_oven_temp_c = value_c
+            self.current_oven_ts_ms = int(time.time() * 1000)
+            if self.temp_source.currentIndex() == 1:
+                self.lbl_temp.setText(f"{value_c:.2f} C")
 
     def update_oven_raw(self, text: str):
         self.current_oven_raw = text
-        self.lbl_oven_raw.setText(f"Última mensagem: {text}")
+        self.lbl_oven_raw.setText(f"Ultima mensagem: {text}")
 
     def update_oven_status(self, text: str):
         self.current_oven_status = text
         self.lbl_oven_status.setText(f"Status: {text}")
 
     def update_oven_error(self, text: str):
-        self.current_oven_status = f"Erro: {text}"
+        self.current_oven_status = "ERROR"
         self.lbl_oven_status.setText("Status: Erro")
-        self.lbl_oven_raw.setText(f"Última mensagem: {text}")
+        self.lbl_oven_raw.setText(f"Ultima mensagem: {text}")
 
-    # =========================================================
-    # FONTES ATUAIS
-    # =========================================================
+    def _is_fresh(self, timestamp_ms: Optional[int]) -> bool:
+        return timestamp_ms is not None and (time.time() * 1000 - timestamp_ms) <= self.data_stale_after_s * 1000
+
     def get_current_temperature(self):
         if self.temp_source.currentIndex() == 0:
             return float(self.input_temp_manual.value())
+        if not self._is_fresh(self.current_oven_ts_ms):
+            return None
         return self.current_oven_temp_c
 
     def get_current_flow(self):
         if self.flow_source.currentIndex() == 0:
             return float(self.input_q.value())
+        if not self._is_fresh(self.current_pump_ts_ms):
+            return None
         return self.current_pump_flow_m3s
 
-    # =========================================================
-    # CÁLCULO DE PERMEABILIDADE (tempo real)
-    # =========================================================
+    def _set_k_unavailable(self):
+        self.lbl_k.setText("-- mD")
+
     def calculate_permeability_realtime(self):
         try:
+            if not self._is_fresh(self.latest_ts_ms):
+                self._set_k_unavailable()
+                return None
             q = self.get_current_flow()
             mu = float(self.input_mu.value())
-            L = float(self.input_L.value())
-            d = float(self.input_d.value())
-
-            if q is None or q <= 0:
-                self.lbl_k.setText("-- mD")
-                return None
-
-            if min(mu, L, d) <= 0:
-                self.lbl_k.setText("-- mD")
-                return None
-
-            pu = self.latest_eng_corr.get("Pu")
-            pd = self.latest_eng_corr.get("Pd")
-
-            if pu is None or pd is None:
-                self.lbl_k.setText("-- mD")
-                return None
+            length_m = float(self.input_L.value())
+            diameter_m = float(self.input_d.value())
+            if q is None or not all(math.isfinite(x) for x in (q, mu, length_m, diameter_m)):
+                raise ValueError("Vazao e parametros geometricos devem ser validos.")
 
             if self.dp_source.currentIndex() == 0:
-                dp = self.latest_eng_corr.get("DP")
+                dp_name = self.differential_channel
+                dp = self.latest_eng_corr.get(dp_name) if dp_name else None
+                dp_unit = self.channel_units.get(dp_name, "bar") if dp_name else "bar"
                 if dp is None:
-                    self.lbl_k.setText("-- mD")
-                    return None
+                    raise ValueError("Canal diferencial sem leitura valida.")
+                dp_pa = pressure_to_pa(dp, dp_unit)
             else:
-                dp = pu - pd
+                upstream = self.latest_eng_corr.get(self.upstream_channel)
+                downstream = self.latest_eng_corr.get(self.downstream_channel)
+                if upstream is None or downstream is None:
+                    raise ValueError("Mapeamento de montante/jusante sem leituras validas.")
+                dp_pa = pressure_to_pa(upstream, self.channel_units[self.upstream_channel]) - pressure_to_pa(
+                    downstream, self.channel_units[self.downstream_channel]
+                )
 
-            if dp is None or dp <= 0:
-                self.lbl_k.setText("-- mD")
-                return None
-
-            dp_pa = dp * 6894.75729
-            A = np.pi * (d / 2.0) ** 2
-
-            if A <= 0:
-                self.lbl_k.setText("-- mD")
-                return None
-
-            k_m2 = (q * mu * L) / (A * dp_pa)
-            k_mD = k_m2 / 9.869233e-16
-
-            if np.isfinite(k_mD) and k_mD >= 0:
-                self.lbl_k.setText(f"{k_mD:.2f} mD")
-                return float(k_mD)
-
-            self.lbl_k.setText("-- mD")
+            result = permeability_darcy(q, mu, length_m, diameter_m, dp_pa, self.fluid_model)
+            if not math.isfinite(result["k_mD"]):
+                raise ValueError("Permeabilidade calculada nao e finita.")
+            self.lbl_k.setText(f"{result['k_mD']:.2f} mD")
+            return result["k_mD"]
+        except (KeyError, TypeError, ValueError):
+            self._set_k_unavailable()
             return None
 
-        except Exception:
-            self.lbl_k.setText("-- mD")
-            return None
+    def _payload_channels(self, payload: dict) -> dict[str, dict[str, Any]]:
+        channels = payload.get("channels")
+        if isinstance(channels, dict):
+            return channels
+        raw = payload.get("eng_raw", [])
+        corrected = payload.get("eng", [])
+        statuses = payload.get("status", [])
+        return {
+            name: {
+                "eng_raw": raw[index] if index < len(raw) else None,
+                "eng": corrected[index] if index < len(corrected) else None,
+                "status": statuses[index] if index < len(statuses) else "INVALID",
+            }
+            for index, name in enumerate(self.channel_names)
+        }
 
-    # =========================================================
-    # UPDATE GERAL DOS DADOS
-    # =========================================================
     def update_data(self, payload):
-        eng_corr = payload.get("eng", [])
-        eng_raw = payload.get("eng_raw", eng_corr)
-        status = payload.get("status", ["OK"] * len(eng_corr))
+        channels = self._payload_channels(payload)
+        self.latest_ts_ms = int(payload.get("timestamp_ms", time.time() * 1000))
+        for name in self.channel_names:
+            item = channels.get(name, {})
+            raw = item.get("eng_raw")
+            corrected = item.get("eng")
+            status = str(item.get("status", "INVALID"))
+            self.latest_eng_raw[name] = float(raw) if raw is not None and math.isfinite(float(raw)) else None
+            self.latest_eng_corr[name] = (
+                float(corrected)
+                if corrected is not None and math.isfinite(float(corrected)) and status == "OK"
+                else None
+            )
+            self.channel_status[name] = status
 
-        # ===== Salva últimas leituras =====
-        for i, name in enumerate(self.channel_names):
-            raw_val = eng_raw[i] if i < len(eng_raw) else None
-            corr_val = eng_corr[i] if i < len(eng_corr) else None
-
-            self.latest_eng_raw[name] = float(raw_val) if raw_val is not None else None
-            self.latest_eng_corr[name] = float(corr_val) if corr_val is not None else None
-
-        self.latest_ts_ms = int(datetime.now().timestamp() * 1000)
-
-        # ===== Índice temporal =====
-        idx = self.t[-1] + 1 if len(self.t) else 0
-        self.t.append(idx)
-
-       # ===== Atualiza labels dos canais (Proteção contra IndexError) =====
-        # Usamos o min() para garantir que o loop não ultrapasse o número de labels na tela
-        num_iterações = min(len(eng_corr), len(self.value_labels))
-        
-        for i in range(num_iterações):
-            val = eng_corr[i]
-            
-            # Atualiza o texto do valor
-            if val is None:
-                self.value_labels[i].setText("OFFLINE")
+        index = self.t[-1] + 1 if self.t else 0
+        self.t.append(index)
+        for name, widget in zip(self.channel_names, self.value_labels):
+            if widget is None:
+                continue
+            value = self.latest_eng_corr.get(name)
+            status = self.channel_status.get(name, "INVALID")
+            if value is None:
+                widget.setText("OFFLINE")
+                widget.setObjectName("TagBad")
             else:
-                self.value_labels[i].setText(f"{val:.2f} psi") 
+                widget.setText(f"{value:.2f} {self.channel_units.get(name, '')}".strip())
+                widget.setObjectName("TagOK" if status == "OK" else "TagWarn")
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
 
-            # Atualiza o estilo visual (Status)
-            if i < len(status):
-                st = status[i]
-                if st == "OK":
-                    self.status_labels[i].setObjectName("TagOK")
-                elif st == "OPEN_LOOP":
-                    self.status_labels[i].setObjectName("TagWarn")
-                else:
-                    self.status_labels[i].setObjectName("TagBad")
-
-                # Força o CSS do PyQt a atualizar a cor imediatamente
-                self.status_labels[i].style().unpolish(self.status_labels[i])
-                self.status_labels[i].style().polish(self.status_labels[i])
-
-        # ===== Cálculos auxiliares =====
-        P1 = self.latest_eng_corr.get("P1")
-        P2 = self.latest_eng_corr.get("P2")
-        DP = self.latest_eng_corr.get("DP")
-    
-        x = list(self.t)
-
-        if P1 is not None and P2 is not None:
-            dpcalc = P2 - P1
-            pmean = (P1 + P2) / 2.0
-            sigma_eff = P2 - pmean
-
-            self.dpcalc.setText(f"{dpcalc:.2f} psi")
-            self.lbl_pmean.setText(f"{pmean:.2f} psi")
-            self.lbl_sigma_eff.setText(f"{sigma_eff:.2f} psi")
-
-            # Atualiza o gráfico de Pressão Diferencial
-            if hasattr(self, "curva_dp"):
-                self.dp_data.append(dpcalc) # Adiciona ao histórico de DP
-                self.curva_dp.setData(x, list(self.dp_data))
+        upstream = self.latest_eng_corr.get(self.upstream_channel)
+        downstream = self.latest_eng_corr.get(self.downstream_channel)
+        if upstream is not None and downstream is not None:
+            unit = self.channel_units.get(self.upstream_channel, "bar")
+            dp_pa = pressure_to_pa(upstream, unit) - pressure_to_pa(
+                downstream, self.channel_units.get(self.downstream_channel, unit)
+            )
+            dp_display = pressure_from_pa(dp_pa, unit)
+            pmean = (pressure_to_pa(upstream, unit) + pressure_to_pa(
+                downstream, self.channel_units.get(self.downstream_channel, unit)
+            )) / 2.0
+            pmean_display = pressure_from_pa(pmean, unit)
+            self.dpcalc.setText(f"{dp_display:.2f} {unit}")
+            self.lbl_pmean.setText(f"{pmean_display:.2f} {unit}")
+            self.lbl_sigma_eff.setText(f"{pressure_from_pa(dp_pa / 2.0, unit):.2f} {unit}")
+            self.dp_data.append(dp_display)
         else:
-            self.dpcalc.setText("-- psi")
-            self.lbl_pmean.setText("-- psi")
-            self.lbl_sigma_eff.setText("-- psi")
+            self.dpcalc.setText("--")
+            self.lbl_pmean.setText("--")
+            self.lbl_sigma_eff.setText("--")
+            self.dp_data.append(np.nan)
+        self.curva_dp.setData(list(self.t), list(self.dp_data))
 
-        # ===== Temperatura =====
-        temp_value = self.get_current_temperature()
-        if temp_value is not None:
-            self.lbl_temp.setText(f"{temp_value:.2f} °C")
-            self.temp_t.append(idx)
-            self.temp_y.append(temp_value)
-            if hasattr(self, "curva_temp"):
-                self.curva_temp.setData(list(self.temp_t), list(self.temp_y))
+        temperature = self.get_current_temperature()
+        if temperature is not None:
+            self.lbl_temp.setText(f"{temperature:.2f} C")
+            self.temp_t.append(index)
+            self.temp_y.append(temperature)
+        else:
+            self.temp_t.append(index)
+            self.temp_y.append(np.nan)
+        self.curva_temp.setData(list(self.temp_t), list(self.temp_y))
 
-        # ===== Permeabilidade =====
         k_value = self.calculate_permeability_realtime()
-        if k_value is not None:
-            self.k_t.append(idx)
-            self.k_y.append(k_value)
-            if hasattr(self, "curva_k"):
-                self.curva_k.setData(list(self.k_t), list(self.k_y))
+        self.k_t.append(index)
+        self.k_y.append(k_value if k_value is not None else np.nan)
+        self.curva_k.setData(list(self.k_t), list(self.k_y))
 
-        # ===== Histórico de pressões =====
-        for i in range(self.n):
-            val = eng_corr[i] if i < len(eng_corr) and eng_corr[i] is not None else 0.0
-            self.y[i].append(val)
+        for name, curve in self.pressure_curves.items():
+            value = self.latest_eng_corr.get(name)
+            self.y[name].append(value if value is not None else np.nan)
+            curve.setData(list(self.t), list(self.y[name]))
 
-        x = list(self.t)
+    def get_raw_by_name(self, name: str):
+        return self.latest_eng_raw.get(name)
 
-        if hasattr(self, "curves"):
-            for i in range(self.n):
-                self.curves[i].setData(x, list(self.y[i]))
-        
-        
+    def get_corr_by_name(self, name: str):
+        return self.latest_eng_corr.get(name)

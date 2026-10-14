@@ -1,7 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
-datas = [('assets', 'assets'), ('config.json', '.')]
+datas = [
+    ('config.json', '.'),
+    ('mainwindow.ui', '.'),
+    ('tela_login.ui', '.'),
+    ('Imagens', 'Imagens'),
+]
+datas += collect_data_files('nidaqmx')
 datas += copy_metadata('nitypes')
 datas += copy_metadata('nidaqmx')
 
@@ -11,7 +17,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=['nidaqmx', 'serial', 'pyqtgraph'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

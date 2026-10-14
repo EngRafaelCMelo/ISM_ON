@@ -5,11 +5,12 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 
 from calc import bulk_volume_cylinder, porosity_from_p1_p2, estimate_alpha_from_decay, permeability_pulse_decay
+from units import pressure_to_pa
 import numpy as np
 
 
 def bar_to_pa(bar: float) -> float:
-    return bar * 1e5
+    return pressure_to_pa(bar, "bar")
 
 
 class ParamsDialog(QDialog):
@@ -19,7 +20,14 @@ class ParamsDialog(QDialog):
     - Calcular porosidade
     - Iniciar/parar aquisição de decay e calcular permeabilidade (pulse-decay)
     """
-    def __init__(self, parent, get_pressure_bar_by_name, set_results_callback):
+    def __init__(
+        self,
+        parent,
+        get_pressure_bar_by_name,
+        set_results_callback,
+        upstream_channel: str = "",
+        downstream_channel: str = "",
+    ):
         super().__init__(parent)
 
         self.get_pressure_bar_by_name = get_pressure_bar_by_name
@@ -127,8 +135,8 @@ class ParamsDialog(QDialog):
         self.vd_cm3.setDecimals(3)
 
         # mapeamento de canais (assumindo nomes do teu config)
-        self.up_name = QLineEdit("P1")
-        self.down_name = QLineEdit("P2")
+        self.up_name = QLineEdit(upstream_channel)
+        self.down_name = QLineEdit(downstream_channel)
 
         self.btn_decay_start = QPushButton("Iniciar Decay (capturar curva)")
         self.btn_decay_stop = QPushButton("Parar Decay e Calcular k")
@@ -234,6 +242,8 @@ class ParamsDialog(QDialog):
 
         up = self.up_name.text().strip()
         down = self.down_name.text().strip()
+        if not up or not down:
+            return
 
         pu = self.get_pressure_bar_by_name(up)
         pd = self.get_pressure_bar_by_name(down)
