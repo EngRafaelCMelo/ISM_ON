@@ -9,7 +9,7 @@
 - `pump_worker.py` / `oven_worker.py`: threads seriais, parser, estado e reconexao com backoff.
 - `units.py`, `calc.py`: conversoes SI e calculos sem dependencia da UI.
 - `calibration_store.py`, `config.py`, `auth.py`: persistencia atomica e validada.
-- `session_manager.py`, `events.py`: rastreabilidade assincorna de ensaio e eventos.
+- `session_manager.py`, `events.py`: rastreabilidade assincrona de ensaio e eventos.
 
 ## Estado da aquisicao
 

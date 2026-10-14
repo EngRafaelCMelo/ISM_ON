@@ -37,7 +37,7 @@ Data da base original: 14/10/2026. O projeto foi estabilizado em duas etapas sob
 
 ## Testes executados
 
-- `python -m pytest -q`: 21 testes aprovados.
+- `python -m pytest -q`: 22 testes aprovados.
 - `python -m py_compile` nos modulos principais: aprovado.
 - Smoke test Qt offscreen: janela, timestamps, curvas DP distintas e modo simulado.
 - Smoke test do controlador: `STARTING -> RUNNING -> STOPPING -> STOPPED`.
