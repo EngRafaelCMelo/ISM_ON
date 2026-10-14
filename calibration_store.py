@@ -1,5 +1,7 @@
 import json
 import os
+import tempfile
+from datetime import datetime, timezone
 from typing import Dict, Any
 
 DEFAULT_CAL = {
@@ -26,8 +28,23 @@ def load_calibration(path: str) -> Dict[str, Any]:
     return data
 
 def save_calibration(path: str, data: Dict[str, Any]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    data.setdefault("metadata", {})
+    data["metadata"]["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=directory, prefix=".calibration-", suffix=".tmp", delete=False
+        ) as f:
+            temp_path = f.name
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 def ensure_channel(cal: Dict[str, Any], name: str) -> None:
     cal.setdefault("channels", {})

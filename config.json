@@ -4,6 +4,31 @@
     "open_loop_low_mA": 3.6,
     "overrange_high_mA": 21.0
   },
+  "calculations": {
+    "permeability": {
+      "upstream_channel": "P1",
+      "downstream_channel": "P2",
+      "differential_channel": "DP",
+      "fluid_model": "incompressible_liquid"
+    }
+  },
+  "devices": {
+    "pump": {
+      "port": "COM5",
+      "baudrate": 9600,
+      "timeout_s": 1.0,
+      "stale_after_s": 3.0
+    },
+    "oven": {
+      "port": "COM6",
+      "baudrate": 9600,
+      "timeout_s": 1.0,
+      "stale_after_s": 3.0
+    }
+  },
+  "simulation": {
+    "enabled": false
+  },
   "channels": [
     { "name": "P1",  "physical": "cDAQ1Mod3/ai9", "lrv": 0, "urv": 10000, "unit": "bar" },
     { "name": "P2",  "physical": "cDAQ1Mod3/ai15", "lrv": 0, "urv": 10000, "unit": "bar" },

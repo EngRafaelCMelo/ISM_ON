@@ -1,11 +1,21 @@
+"""Calculos cientificos independentes da interface grafica."""
+
+from __future__ import annotations
+
 import math
+
 import numpy as np
+
 
 DARCY_M2 = 9.869233e-13
 MILLI_DARCY_M2 = 9.869233e-16
 
 
 def bulk_volume_cylinder(d_m: float, L_m: float) -> float:
+    if not math.isfinite(float(d_m)) or not math.isfinite(float(L_m)):
+        raise ValueError("Diametro e comprimento devem ser finitos.")
+    if d_m <= 0 or L_m <= 0:
+        raise ValueError("Diametro e comprimento devem ser maiores que zero.")
     return math.pi * (d_m / 2.0) ** 2 * L_m
 
 
@@ -16,33 +26,26 @@ def porosity_from_p1_p2(
     vcell_empty_m3: float,
     vbulk_m3: float,
 ) -> dict:
-    """
-    MODELO (comum): câmara de referência (Vref) pressurizada a P1
-    e câmara da amostra inicialmente evacuada. Ao abrir, equaliza em P2.
-    Conservação de massa (gás ideal, T constante):
-        P1*Vref = P2*(Vref + Vvoid)
-      => Vvoid = Vref*(P1/P2 - 1)
-
-    vcell_empty_m3 = volume livre da célula SEM amostra (calibrado).
-    Com amostra, o volume livre vira Vvoid.
-      => Vgrain = vcell_empty - Vvoid
-    Porosidade:
-      Vpore = Vbulk - Vgrain
-      phi = Vpore / Vbulk
-    """
+    """Calcula porosidade pelo modelo de expansao de gas ideal isotermica."""
+    values = (p1_pa, p2_pa, vref_m3, vcell_empty_m3, vbulk_m3)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError("Entradas devem ser numericas e finitas.")
     if p2_pa <= 0:
-        raise ValueError("P2 inválida (<=0).")
+        raise ValueError("P2 invalida (<=0).")
     if p1_pa <= 0:
-        raise ValueError("P1 inválida (<=0).")
+        raise ValueError("P1 invalida (<=0).")
     if p1_pa <= p2_pa:
         raise ValueError("Para este modelo, precisa P1 > P2.")
     if vref_m3 <= 0 or vcell_empty_m3 <= 0 or vbulk_m3 <= 0:
         raise ValueError("Volumes devem ser > 0.")
 
-    vvoid = vref_m3 * (p1_pa / p2_pa - 1.0)  # volume livre com a amostra
+    vvoid = vref_m3 * (p1_pa / p2_pa - 1.0)
     vgrain = vcell_empty_m3 - vvoid
     vpore = vbulk_m3 - vgrain
     phi = vpore / vbulk_m3
+
+    if vgrain < 0 or vpore < 0 or vpore > vbulk_m3:
+        raise ValueError("Volumes calculados sao fisicamente inconsistentes.")
 
     return {
         "Vvoid_m3": float(vvoid),
@@ -54,19 +57,26 @@ def porosity_from_p1_p2(
 
 
 def estimate_alpha_from_decay(t_s: np.ndarray, dP_pa: np.ndarray) -> float:
-    """
-    Ajusta ln(dP) = ln(dP0) - alpha*t  -> alpha = -slope
-    """
+    """Ajusta ln(dP) = ln(dP0) - alpha*t."""
+    t_s = np.asarray(t_s, dtype=float)
+    dP_pa = np.asarray(dP_pa, dtype=float)
+    if t_s.shape != dP_pa.shape or t_s.ndim != 1:
+        raise ValueError("Tempo e pressao diferencial devem ser vetores do mesmo tamanho.")
+    if not np.all(np.isfinite(t_s)) or not np.all(np.isfinite(dP_pa)):
+        raise ValueError("Dados do decay devem ser finitos.")
+    if len(t_s) < 2 or np.any(np.diff(t_s) < 0):
+        raise ValueError("Tempo do decay deve ser crescente.")
+
     mask = dP_pa > 0
     t = t_s[mask]
     y = np.log(dP_pa[mask])
 
     if len(t) < 20:
-        raise ValueError("Poucos pontos para estimar alpha (mínimo ~20).")
+        raise ValueError("Poucos pontos para estimar alpha (minimo ~20).")
 
     slope, _ = np.polyfit(t, y, 1)
     alpha = -slope
-    if alpha <= 0:
+    if not math.isfinite(float(alpha)) or alpha <= 0:
         raise ValueError("Alpha estimado <= 0 (decay ruim ou dados inconsistentes).")
     return float(alpha)
 
@@ -80,20 +90,38 @@ def permeability_pulse_decay(
     Vu_m3: float,
     Vd_m3: float,
 ) -> dict:
-    """
-    Modelo linearizado (gás ideal, pequena ΔP):
-      d(ΔP)/dt = - alpha * ΔP
-      alpha = Pm * (k*A/(mu*L)) * (1/Vu + 1/Vd)
-
-    => k = alpha * mu * L / (A * Pm * (1/Vu + 1/Vd))
-
-    Retorna k em m² e em mD.
-    """
-    if any(x <= 0 for x in [alpha_1_s, mu_pa_s, L_m, A_m2, Pm_pa, Vu_m3, Vd_m3]):
-        raise ValueError("Parâmetros inválidos (precisam ser > 0).")
+    """Calcula permeabilidade pelo modelo pulse-decay de gas ideal."""
+    values = [alpha_1_s, mu_pa_s, L_m, A_m2, Pm_pa, Vu_m3, Vd_m3]
+    if not all(math.isfinite(float(x)) for x in values):
+        raise ValueError("Parametros devem ser finitos.")
+    if any(x <= 0 for x in values):
+        raise ValueError("Parametros precisam ser maiores que zero.")
 
     denom = A_m2 * Pm_pa * (1.0 / Vu_m3 + 1.0 / Vd_m3)
     k_m2 = alpha_1_s * mu_pa_s * L_m / denom
     k_mD = k_m2 / MILLI_DARCY_M2
 
     return {"k_m2": float(k_m2), "k_mD": float(k_mD)}
+
+
+def permeability_darcy(
+    q_m3s: float,
+    mu_pa_s: float,
+    L_m: float,
+    diameter_m: float,
+    dp_pa: float,
+    fluid_model: str = "incompressible_liquid",
+) -> dict:
+    """Calcula k pela lei de Darcy para liquido incompressivel."""
+    if fluid_model != "incompressible_liquid":
+        raise ValueError("A lei de Darcy nesta funcao e restrita a liquido incompressivel.")
+    values = [q_m3s, mu_pa_s, L_m, diameter_m, dp_pa]
+    if not all(math.isfinite(float(x)) for x in values):
+        raise ValueError("Parametros de Darcy devem ser finitos.")
+    if any(x <= 0 for x in values):
+        raise ValueError("Parametros de Darcy devem ser maiores que zero.")
+    area_m2 = math.pi * (diameter_m / 2.0) ** 2
+    k_m2 = q_m3s * mu_pa_s * L_m / (area_m2 * dp_pa)
+    if not math.isfinite(k_m2) or k_m2 < 0:
+        raise ValueError("Resultado de permeabilidade invalido.")
+    return {"k_m2": float(k_m2), "k_mD": float(k_m2 / MILLI_DARCY_M2)}
