@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from config import device_config, load_config, validate_config
+from config import device_config, load_config, save_config, validate_config
 
 
 def test_current_config_is_valid_and_keeps_explicit_sensor_ranges():
@@ -24,3 +24,14 @@ def test_duplicate_channels_and_unknown_mapping_are_rejected():
     base["channels"].append(base["channels"][0].copy())
     with pytest.raises(ValueError):
         validate_config(base)
+
+
+def test_config_save_is_atomic_and_creates_backup(tmp_path):
+    data = load_config("config.json")
+    path = tmp_path / "config.json"
+    save_config(str(path), data, create_backup=False)
+    data["devices"]["pump"]["port"] = "COM99"
+    save_config(str(path), data)
+    assert path.exists()
+    assert list(tmp_path.glob("config.json.*.bak"))
+    assert load_config(str(path))["devices"]["pump"]["port"] == "COM99"

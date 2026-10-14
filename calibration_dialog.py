@@ -80,6 +80,7 @@ class CalibrationDialog(QDialog):
         self.tbl.verticalHeader().setVisible(False)
         self.tbl.setAlternatingRowColors(True)
         self.tbl.setSelectionMode(self.tbl.NoSelection)
+        self.capture_buttons = {"zero": [], "span": []}
 
         for r, name in enumerate(self.channel_names):
             self.tbl.setItem(r, 0, QTableWidgetItem(name))
@@ -110,6 +111,7 @@ class CalibrationDialog(QDialog):
 
             btn_cap_zero = QPushButton("Capturar")
             self.tbl.setCellWidget(r, 6, btn_cap_zero)
+            self.capture_buttons["zero"].append(btn_cap_zero)
 
             # SPAN ref input (VARIÁVEL)
             span_ref = QDoubleSpinBox()
@@ -120,6 +122,7 @@ class CalibrationDialog(QDialog):
 
             btn_cap_span = QPushButton("Capturar")
             self.tbl.setCellWidget(r, 8, btn_cap_span)
+            self.capture_buttons["span"].append(btn_cap_span)
 
             btn_calc = QPushButton("Calcular")
             self.tbl.setCellWidget(r, 9, btn_calc)
@@ -137,6 +140,8 @@ class CalibrationDialog(QDialog):
         self.tbl.horizontalHeader().setStretchLastSection(True)
 
         v1.addWidget(self.tbl)
+        self.lbl_updated = QLabel()
+        v1.addWidget(self.lbl_updated)
 
         row2 = QHBoxLayout()
         self.btn_save_all = QPushButton("Salvar Tudo")
@@ -206,12 +211,15 @@ class CalibrationDialog(QDialog):
         self.timer.setInterval(250)
         self.timer.timeout.connect(self.refresh_live_values)
         self.timer.start()
+        self.refresh_live_values()
+        self.refresh_metadata_label()
 
     def reload(self):
         self.cal = load_calibration(self.calibration_path)
         for n in self.channel_names:
             ensure_channel(self.cal, n)
         self.refresh_ab_columns()
+        self.refresh_metadata_label()
         QMessageBox.information(self, "Calibração", "Recarregado do arquivo.")
 
     def refresh_ab_columns(self):
@@ -221,12 +229,18 @@ class CalibrationDialog(QDialog):
             self.tbl.item(r, 3).setText(f"{a:.6f}")
             self.tbl.item(r, 4).setText(f"{b:.6f}")
 
+    def refresh_metadata_label(self):
+        updated = self.cal.get("metadata", {}).get("updated_at_utc", "nunca")
+        self.lbl_updated.setText(f"Ultima calibracao: {updated}")
+
     def refresh_live_values(self):
         for r, name in enumerate(self.channel_names):
             raw = self.get_raw_by_name(name)
             corr = self.get_corr_by_name(name)
             self.tbl.item(r, 1).setText("--" if raw is None else f"{raw:.4f}")
             self.tbl.item(r, 2).setText("--" if corr is None else f"{corr:.4f}")
+            self.capture_buttons["zero"][r].setEnabled(raw is not None)
+            self.capture_buttons["span"][r].setEnabled(raw is not None)
 
     def capture_zero(self, row: int):
         name = self.channel_names[row]
@@ -271,20 +285,35 @@ class CalibrationDialog(QDialog):
 
     def save_line(self, row: int):
         name = self.channel_names[row]
+        if QMessageBox.question(
+            self, "Confirmar salvamento", f"Salvar a calibracao de {name}? Um backup sera criado."
+        ) != QMessageBox.Yes:
+            return
         save_calibration(self.calibration_path, self.cal)
+        self.refresh_metadata_label()
         QMessageBox.information(self, "Salvo", f"Calibração salva para {name} (arquivo).")
 
     def save_all(self):
+        if QMessageBox.question(
+            self, "Confirmar salvamento", "Salvar todas as calibracoes? Um backup sera criado."
+        ) != QMessageBox.Yes:
+            return
         save_calibration(self.calibration_path, self.cal)
+        self.refresh_metadata_label()
         QMessageBox.information(self, "Salvo", "Calibração completa salva (arquivo).")
 
     def save_volumes(self):
+        if QMessageBox.question(
+            self, "Confirmar salvamento", "Salvar os volumes? Um backup sera criado."
+        ) != QMessageBox.Yes:
+            return
         self.cal.setdefault("volumes", {})
         self.cal["volumes"]["Vref_cm3"] = float(self.vref.value())
         self.cal["volumes"]["Vcell_cm3"] = float(self.vcell.value())
         self.cal["volumes"]["Vu_cm3"] = float(self.vu.value())
         self.cal["volumes"]["Vd_cm3"] = float(self.vd.value())
         save_calibration(self.calibration_path, self.cal)
+        self.refresh_metadata_label()
         QMessageBox.information(self, "Volumes", "Volumes salvos em calibration.json")
 
     def check_stability(self):

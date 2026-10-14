@@ -29,6 +29,18 @@
   "simulation": {
     "enabled": false
   },
+  "auth": {
+    "users_path": "users.json"
+  },
+  "calibration": {
+    "path": "calibration.json"
+  },
+  "sessions": {
+    "folder": "ensaios"
+  },
+  "plot": {
+    "max_history_s": 3600
+  },
   "channels": [
     { "name": "P1",  "physical": "cDAQ1Mod3/ai9", "lrv": 0, "urv": 10000, "unit": "bar" },
     { "name": "P2",  "physical": "cDAQ1Mod3/ai15", "lrv": 0, "urv": 10000, "unit": "bar" },

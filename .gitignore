@@ -7,6 +7,13 @@ dist/
 logs/
 .pytest_cache/
 calibration.json
+calibration.json.*.bak
+config.json.*.bak
+users.json
+users.json.*.bak
+ensaios/
+data/
+*.log
 *.egg-info/
 .idea/
 .vscode/

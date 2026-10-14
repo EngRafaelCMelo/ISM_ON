@@ -27,11 +27,13 @@ class ParamsDialog(QDialog):
         set_results_callback,
         upstream_channel: str = "",
         downstream_channel: str = "",
+        parameters=None,
     ):
         super().__init__(parent)
 
         self.get_pressure_bar_by_name = get_pressure_bar_by_name
         self.set_results_callback = set_results_callback
+        self.initial_parameters = dict(parameters or {})
 
         self.setWindowTitle("Configurar Ensaio (Porosidade / Permeabilidade)")
         self.setModal(True)
@@ -173,6 +175,7 @@ class ParamsDialog(QDialog):
         self.btn_calc_phi.clicked.connect(self.calc_porosity)
         self.btn_decay_start.clicked.connect(self.start_decay)
         self.btn_decay_stop.clicked.connect(self.stop_decay_and_calc)
+        self.set_parameters(self.initial_parameters)
 
     # ===== Util =====
     def _cm3_to_m3(self, cm3: float) -> float:
@@ -180,6 +183,46 @@ class ParamsDialog(QDialog):
 
     def _mm_to_m(self, mm: float) -> float:
         return mm / 1000.0
+
+    def set_parameters(self, values):
+        values = values or {}
+        if "sample_id" in values:
+            self.sample_id.setText(str(values["sample_id"]))
+        if "diameter_m" in values:
+            self.d_mm.setValue(float(values["diameter_m"]) * 1000.0)
+        if "length_m" in values:
+            self.L_mm.setValue(float(values["length_m"]) * 1000.0)
+        for key, widget in (
+            ("vref_cm3", self.vref_cm3), ("vcell_cm3", self.vcell_cm3),
+            ("vu_cm3", self.vu_cm3), ("vd_cm3", self.vd_cm3), ("temperature_c", self.temp_c),
+        ):
+            if key in values:
+                widget.setValue(float(values[key]))
+        if "viscosity_pa_s" in values:
+            self.mu.setText(str(values["viscosity_pa_s"]))
+        if "upstream_channel" in values:
+            self.up_name.setText(str(values["upstream_channel"]))
+        if "downstream_channel" in values:
+            self.down_name.setText(str(values["downstream_channel"]))
+
+    def values(self):
+        try:
+            viscosity = float(self.mu.text().strip())
+        except ValueError as exc:
+            raise ValueError("Viscosidade invalida.") from exc
+        return {
+            "sample_id": self.sample_id.text().strip(),
+            "diameter_m": self._mm_to_m(self.d_mm.value()),
+            "length_m": self._mm_to_m(self.L_mm.value()),
+            "vref_cm3": self.vref_cm3.value(),
+            "vcell_cm3": self.vcell_cm3.value(),
+            "vu_cm3": self.vu_cm3.value(),
+            "vd_cm3": self.vd_cm3.value(),
+            "temperature_c": self.temp_c.value(),
+            "viscosity_pa_s": viscosity,
+            "upstream_channel": self.up_name.text().strip(),
+            "downstream_channel": self.down_name.text().strip(),
+        }
 
     # ===== Porosidade =====
     def capture_p1(self):

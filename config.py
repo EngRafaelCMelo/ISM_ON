@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
+import tempfile
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from units import PRESSURE_TO_PA
@@ -15,6 +18,30 @@ def load_config(path: str) -> Dict[str, Any]:
         data = json.load(file)
     validate_config(data)
     return data
+
+
+def save_config(path: str, config: Dict[str, Any], create_backup: bool = True) -> None:
+    """Valida e grava a configuracao sem deixar arquivo parcialmente escrito."""
+    validate_config(config)
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    if create_backup and os.path.exists(path):
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        shutil.copy2(path, f"{path}.{stamp}.bak")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=directory,
+            prefix=".config-", suffix=".tmp", delete=False
+        ) as file:
+            temporary = file.name
+            json.dump(config, file, indent=2, ensure_ascii=False)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def validate_config(config: Dict[str, Any]) -> None:
@@ -84,9 +111,19 @@ def validate_config(config: Dict[str, Any]) -> None:
             raise ValueError(f"Configuracao invalida para {device_name}.")
         if "baudrate" in device and int(device["baudrate"]) <= 0:
             raise ValueError(f"baudrate invalido para {device_name}.")
+        if "port" in device and not str(device["port"]).strip():
+            raise ValueError(f"porta invalida para {device_name}.")
         for timeout_key in ("timeout_s", "stale_after_s"):
             if timeout_key in device and float(device[timeout_key]) <= 0:
                 raise ValueError(f"{timeout_key} invalido para {device_name}.")
+
+    for section_name in ("auth", "calibration", "sessions", "plot"):
+        section = config.get(section_name, {})
+        if not isinstance(section, dict):
+            raise ValueError(f"{section_name} deve ser um objeto JSON.")
+    plot = config.get("plot", {})
+    if "max_history_s" in plot and (not math.isfinite(float(plot["max_history_s"])) or float(plot["max_history_s"]) <= 0):
+        raise ValueError("plot.max_history_s deve ser finito e maior que zero.")
 
 
 def device_config(config: Dict[str, Any], name: str) -> Dict[str, Any]:

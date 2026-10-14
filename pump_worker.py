@@ -31,6 +31,16 @@ class PumpWorker(QThread):
         self._running = False
         self._ser = None
         self._last_valid_at = None
+        self._connected_at = None
+        self._backoff_s = 1.0
+
+    def configure(self, port, baudrate, timeout_s, stale_after_s):
+        if self.isRunning():
+            raise RuntimeError("Nao e possivel alterar a bomba conectada.")
+        self.port = str(port)
+        self.baudrate = int(baudrate)
+        self.timeout_s = float(timeout_s)
+        self.stale_after_s = float(stale_after_s)
 
     def start(self, priority=QThread.InheritPriority):
         if self.isRunning():
@@ -40,17 +50,36 @@ class PumpWorker(QThread):
     def run(self):
         if serial is None:
             self._emit_error("pyserial nao esta instalado.")
+            self.state.emit(DISCONNECTED)
             return
         self._running = True
         self._last_valid_at = None
-        self.state.emit(CONNECTING)
-        self.status.emit(f"Conectando em {self.port}")
+        self._backoff_s = 1.0
         try:
-            self._ser = serial.Serial(self.port, self.baudrate, timeout=self.timeout_s)
-            self.state.emit(OK)
-            self.status.emit(f"Bomba conectada em {self.port}")
             while self._running:
-                line = self._ser.readline().decode(errors="ignore").strip()
+                if self._ser is None:
+                    self.state.emit(CONNECTING)
+                    self.status.emit(f"Conectando em {self.port}")
+                    try:
+                        self._ser = serial.Serial(self.port, self.baudrate, timeout=self.timeout_s)
+                        self._connected_at = time.monotonic()
+                        self._last_valid_at = None
+                        self._backoff_s = 1.0
+                        self.status.emit(f"Porta da bomba aberta; aguardando leitura")
+                    except Exception as exc:
+                        self._ser = None
+                        self._emit_error(f"Falha ao conectar bomba: {exc}")
+                        self._wait_backoff()
+                        continue
+                try:
+                    line = self._ser.readline().decode(errors="ignore").strip()
+                except Exception as exc:
+                    if not self._running:
+                        break
+                    self._emit_error(f"Falha lendo bomba: {exc}")
+                    self._close_serial()
+                    self._wait_backoff()
+                    continue
                 if not line:
                     self._mark_stale_if_needed()
                     continue
@@ -58,6 +87,7 @@ class PumpWorker(QThread):
                 flow_m3s = self.parse_flow(line)
                 if flow_m3s is None or not math.isfinite(flow_m3s) or flow_m3s < 0:
                     self.state.emit(INVALID)
+                    self.status.emit("Bomba: mensagem invalida")
                     continue
                 self._last_valid_at = time.monotonic()
                 self.state.emit(OK)
@@ -65,6 +95,8 @@ class PumpWorker(QThread):
         except Exception as exc:
             if self._running:
                 self._emit_error(f"Falha lendo bomba: {exc}")
+                self._close_serial()
+                self._wait_backoff()
         finally:
             self._running = False
             self._close_serial()
@@ -77,6 +109,12 @@ class PumpWorker(QThread):
         if self.isRunning() and QThread.currentThread() != self:
             self.wait(1500)
 
+    def _wait_backoff(self):
+        deadline = time.monotonic() + self._backoff_s
+        self._backoff_s = min(30.0, self._backoff_s * 2.0)
+        while self._running and time.monotonic() < deadline:
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
     def _close_serial(self):
         try:
             if self._ser and self._ser.is_open:
@@ -86,7 +124,8 @@ class PumpWorker(QThread):
         self._ser = None
 
     def _mark_stale_if_needed(self):
-        if self._last_valid_at is not None and time.monotonic() - self._last_valid_at > self.stale_after_s:
+        reference = self._last_valid_at or self._connected_at
+        if reference is not None and time.monotonic() - reference > self.stale_after_s:
             self.state.emit(STALE)
             self.status.emit("Bomba sem leitura valida (STALE)")
 

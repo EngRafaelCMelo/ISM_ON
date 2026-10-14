@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from typing import Dict, Any
@@ -27,9 +28,12 @@ def load_calibration(path: str) -> Dict[str, Any]:
         data["volumes"] = json.loads(json.dumps(DEFAULT_CAL["volumes"]))
     return data
 
-def save_calibration(path: str, data: Dict[str, Any]) -> None:
+def save_calibration(path: str, data: Dict[str, Any], create_backup: bool = True) -> None:
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
+    if create_backup and os.path.exists(path):
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        shutil.copy2(path, f"{path}.{stamp}.bak")
     data.setdefault("metadata", {})
     data["metadata"]["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
     temp_path = None
