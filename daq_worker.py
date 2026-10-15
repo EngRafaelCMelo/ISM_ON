@@ -198,15 +198,18 @@ class DaqWorker(QObject):
                     "unit": channel.unit,
                 }
 
-            timestamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
+            now = datetime.now().astimezone()
+            timestamp = now.isoformat(timespec="milliseconds")
             payload = {
                 "ts": timestamp,
-                "timestamp_ms": int(datetime.now().timestamp() * 1000),
+                "timestamp_ms": int(now.timestamp() * 1000),
                 "mA": currents_mA,
                 "eng_raw": eng_raw,
                 "eng": eng_corr,
                 "status": statuses,
                 "channels": channel_payload,
+                "source": "REAL",
+                "simulated": False,
             }
             if self._logger:
                 self._logger.write_row(

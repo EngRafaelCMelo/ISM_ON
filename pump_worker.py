@@ -7,6 +7,7 @@ import time
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from device_state import CONNECTING, DISCONNECTED, ERROR, INVALID, OK, STALE
+from serial_utils import validate_serial_settings
 from units import flow_to_m3s
 
 try:
@@ -24,6 +25,7 @@ class PumpWorker(QThread):
 
     def __init__(self, port="COM5", baudrate=9600, timeout_s=1.0, stale_after_s=3.0, parent=None):
         super().__init__(parent)
+        validate_serial_settings(port, baudrate, timeout_s, stale_after_s)
         self.port = port
         self.baudrate = int(baudrate)
         self.timeout_s = float(timeout_s)
@@ -33,10 +35,12 @@ class PumpWorker(QThread):
         self._last_valid_at = None
         self._connected_at = None
         self._backoff_s = 1.0
+        self._stop_requested = False
 
     def configure(self, port, baudrate, timeout_s, stale_after_s):
         if self.isRunning():
             raise RuntimeError("Nao e possivel alterar a bomba conectada.")
+        validate_serial_settings(port, baudrate, timeout_s, stale_after_s)
         self.port = str(port)
         self.baudrate = int(baudrate)
         self.timeout_s = float(timeout_s)
@@ -45,9 +49,13 @@ class PumpWorker(QThread):
     def start(self, priority=QThread.InheritPriority):
         if self.isRunning():
             return
+        self._stop_requested = False
         super().start(priority)
 
     def run(self):
+        if self._stop_requested:
+            self.state.emit(DISCONNECTED)
+            return
         if serial is None:
             self._emit_error("pyserial nao esta instalado.")
             self.state.emit(DISCONNECTED)
@@ -104,10 +112,16 @@ class PumpWorker(QThread):
             self.status.emit("Bomba desconectada")
 
     def stop(self):
+        """Solicita parada sem bloquear a thread da interface.
+
+        Fechar a porta interrompe ``readline`` em implementacoes normais de
+        pyserial. A thread termina no proprio ``run`` e emite DISCONNECTED no
+        ``finally``. O ``wait`` anterior bloqueava o operador durante o
+        timeout configurado da porta.
+        """
+        self._stop_requested = True
         self._running = False
         self._close_serial()
-        if self.isRunning() and QThread.currentThread() != self:
-            self.wait(1500)
 
     def _wait_backoff(self):
         deadline = time.monotonic() + self._backoff_s

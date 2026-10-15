@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QTabWidget,
-    QWidget, QLineEdit, QPushButton, QLabel, QMessageBox, QDoubleSpinBox
+    QWidget, QLineEdit, QPushButton, QLabel, QMessageBox, QDoubleSpinBox, QComboBox
 )
 from PyQt5.QtCore import Qt
 
@@ -56,6 +56,19 @@ class ParamsDialog(QDialog):
 
         self.sample_id = QLineEdit("Amostra-001")
 
+        self.flow_m3s_manual = QDoubleSpinBox()
+        self.flow_m3s_manual.setRange(0.0, 1e6)
+        self.flow_m3s_manual.setDecimals(9)
+        self.temperature_c_manual = QDoubleSpinBox()
+        self.temperature_c_manual.setRange(-273.15, 1000.0)
+        self.temperature_c_manual.setDecimals(3)
+        # A single temperature field is shared by manual operation and the
+        # scientific parameter snapshot; keep the legacy attribute as an alias.
+        self.temp_c = self.temperature_c_manual
+        self.test_model = QComboBox()
+        self.test_model.addItem("Liquido incompressivel (Darcy)", "incompressible_liquid")
+        self.test_model.addItem("Gas / pulse-decay", "gas_pulse_decay")
+
         self.d_mm = QDoubleSpinBox()
         self.d_mm.setRange(0.1, 500.0)
         self.d_mm.setValue(25.4)
@@ -69,6 +82,9 @@ class ParamsDialog(QDialog):
         f1.addRow("ID da amostra:", self.sample_id)
         f1.addRow("Diâmetro (mm):", self.d_mm)
         f1.addRow("Comprimento (mm):", self.L_mm)
+        f1.addRow("Vazão manual (m³/s):", self.flow_m3s_manual)
+        f1.addRow("Temperatura manual (°C):", self.temperature_c_manual)
+        f1.addRow("Modelo do ensaio:", self.test_model)
 
         # ===== TAB 2: Porosidade =====
         tab_por = QWidget()
@@ -118,11 +134,6 @@ class ParamsDialog(QDialog):
         tabs.addTab(tab_perm, "Permeabilidade (Decay)")
         f3 = QFormLayout(tab_perm)
 
-        self.temp_c = QDoubleSpinBox()
-        self.temp_c.setRange(-50.0, 200.0)
-        self.temp_c.setValue(25.0)
-        self.temp_c.setDecimals(2)
-
         # viscosidade N2 aproximada a ~25C
         self.mu = QLineEdit("1.78e-5")  # Pa.s
 
@@ -152,7 +163,6 @@ class ParamsDialog(QDialog):
         self.lbl_k.setAlignment(Qt.AlignLeft)
         self.lbl_k.setStyleSheet("font-weight: 800; font-size: 14px;")
 
-        f3.addRow("Temperatura (°C):", self.temp_c)
         f3.addRow("μ N₂ (Pa·s):", self.mu)
         f3.addRow("Vu (cm³):", self.vu_cm3)
         f3.addRow("Vd (cm³):", self.vd_cm3)
@@ -200,6 +210,14 @@ class ParamsDialog(QDialog):
                 widget.setValue(float(values[key]))
         if "viscosity_pa_s" in values:
             self.mu.setText(str(values["viscosity_pa_s"]))
+        if "flow_m3s_manual" in values:
+            self.flow_m3s_manual.setValue(float(values["flow_m3s_manual"]))
+        if "temperature_c_manual" in values:
+            self.temperature_c_manual.setValue(float(values["temperature_c_manual"]))
+        if "test_model" in values:
+            index = self.test_model.findData(values["test_model"])
+            if index >= 0:
+                self.test_model.setCurrentIndex(index)
         if "upstream_channel" in values:
             self.up_name.setText(str(values["upstream_channel"]))
         if "downstream_channel" in values:
@@ -219,9 +237,12 @@ class ParamsDialog(QDialog):
             "vu_cm3": self.vu_cm3.value(),
             "vd_cm3": self.vd_cm3.value(),
             "temperature_c": self.temp_c.value(),
+            "temperature_c_manual": self.temperature_c_manual.value(),
+            "flow_m3s_manual": self.flow_m3s_manual.value(),
             "viscosity_pa_s": viscosity,
             "upstream_channel": self.up_name.text().strip(),
             "downstream_channel": self.down_name.text().strip(),
+            "test_model": self.test_model.currentData(),
         }
 
     # ===== Porosidade =====

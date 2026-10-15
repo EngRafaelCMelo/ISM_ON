@@ -19,7 +19,7 @@ Somente administrador pode abrir a tela de calibracao e a aquisicao deve estar p
 
 ## Parametros
 
-O menu `Operacao > Parametros do ensaio` edita os mesmos campos usados pela tela principal: diametro, comprimento, viscosidade, vazao/temperatura manuais e mapeamento upstream/downstream. A tela principal e a origem usada nos calculos; o dialogo apenas edita e devolve os valores.
+Somente administrador pode salvar parametros. O menu `Operacao > Parametros do ensaio` edita a origem canonica usada pela tela principal e grava atomicamente em `config.json`: diametro, comprimento, viscosidade, vazao/temperatura manuais, volumes de referencia/montante/jusante, mapeamento upstream/downstream e modelo do ensaio. A aquisicao precisa estar parada. O dialogo de calibracao nao e outra origem para esses parametros.
 
 ## Bomba e estufa
 
@@ -37,4 +37,4 @@ ensaios/
     └── events.log
 ```
 
-O CSV preserva canais, mA, bruto, calibrado, status, DP medido/calculado, vazao, temperatura e permeabilidade. Um erro encerra o registro de forma segura e preserva o que ja foi enfileirado.
+O CSV preserva canais, mA, bruto, calibrado, status, DP medido/calculado, vazao, temperatura e permeabilidade. Um erro encerra o registro de forma segura e preserva o que ja foi enfileirado. Amostras de origem diferente da sessao sao descartadas e geram `SESSION_SOURCE_MISMATCH`.

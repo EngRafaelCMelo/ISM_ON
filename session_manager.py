@@ -34,7 +34,8 @@ class SessionRecorder:
 
     @property
     def active(self) -> bool:
-        return self._active
+        with self._lock:
+            return self._active
 
     @property
     def error(self) -> Optional[Exception]:
@@ -55,6 +56,20 @@ class SessionRecorder:
     ) -> str:
         if self.active:
             raise RuntimeError("Ja existe um ensaio ativo.")
+        for field_name, field_value in {
+            "session_id": session_id,
+            "sample_name": sample_name,
+            "operator": operator,
+            "test_type": test_type,
+        }.items():
+            if not isinstance(field_value, str):
+                raise ValueError(f"{field_name} deve ser texto.")
+        source = str(source).upper()
+        simulated = bool(simulated)
+        if source not in {"REAL", "SIMULATED"}:
+            raise ValueError("A origem do ensaio deve ser REAL ou SIMULATED.")
+        if simulated != (source == "SIMULATED"):
+            raise ValueError("Origem e indicador de simulacao sao inconsistentes.")
         self._queue = queue.Queue()
         started = datetime.now().astimezone()
         folder = f"{started:%Y-%m-%d}_{_safe_name(sample_name)}_{uuid.uuid4().hex[:8]}"
@@ -70,27 +85,46 @@ class SessionRecorder:
             "ended_at": None,
             "duration_s": None,
             "source": source,
-            "simulated": bool(simulated),
+            "simulated": simulated,
             "parameters": parameters,
             "sensor_config": sensor_config,
             "calibration": calibration,
         }
         self._write_json("metadata.json", self.metadata)
         self._write_text("events.log", "")
-        self._active = True
-        self._error = None
+        with self._lock:
+            self._active = True
+            self._error = None
         self._thread = threading.Thread(target=self._writer_loop, name="session-writer", daemon=True)
         self._thread.start()
         self.record_event("SESSION", "INFO", "Ensaio iniciado", "SESSION_STARTED")
         return self.path
 
     def _write_json(self, name: str, data: Any) -> None:
-        with open(os.path.join(self.path or self.base_dir, name), "w", encoding="utf-8") as file:
-            json.dump(data, file, indent=2, ensure_ascii=False, default=str)
+        target = os.path.join(self.path or self.base_dir, name)
+        temporary = None
+        try:
+            with open(target + ".tmp", "w", encoding="utf-8") as file:
+                temporary = file.name
+                json.dump(data, file, indent=2, ensure_ascii=False, default=str)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary, target)
+        finally:
+            if temporary and os.path.exists(temporary):
+                os.unlink(temporary)
 
     def _write_text(self, name: str, data: str) -> None:
         with open(os.path.join(self.path or self.base_dir, name), "w", encoding="utf-8") as file:
             file.write(data)
+
+    def _append_event_now(self, event: Dict[str, Any]) -> None:
+        """Persiste um evento diretamente quando o writer nao esta disponivel."""
+        if not self.path:
+            return
+        with open(os.path.join(self.path, "events.log"), "a", encoding="utf-8") as events_file:
+            events_file.write(json.dumps(event, ensure_ascii=False) + "\n")
+            events_file.flush()
 
     def record_event(self, source: str, severity: str, message: str, code: str = "") -> None:
         if self.active:
@@ -101,6 +135,17 @@ class SessionRecorder:
 
     def record(self, payload: Dict[str, Any], derived: Optional[Dict[str, Any]] = None) -> None:
         if self.active:
+            expected_source = self.metadata.get("source", "REAL")
+            expected_simulated = bool(self.metadata.get("simulated", False))
+            payload_source = str(payload.get("source", "SIMULATED" if payload.get("simulated") else "REAL")).upper()
+            payload_simulated = bool(payload.get("simulated", payload_source == "SIMULATED"))
+            if payload_source != expected_source or payload_simulated != expected_simulated:
+                self.record_event(
+                    "SESSION", "ERROR",
+                    f"Amostra ignorada: origem {payload_source} incompativel com o ensaio {expected_source}.",
+                    "SESSION_SOURCE_MISMATCH",
+                )
+                return
             self._queue.put(("measurement", (payload, derived or {})))
 
     def _writer_loop(self) -> None:
@@ -145,6 +190,16 @@ class SessionRecorder:
                 file.flush()
         except Exception as exc:
             self._error = exc
+            try:
+                self._append_event_now({
+                    "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                    "source": "SESSION",
+                    "severity": "ERROR",
+                    "message": f"Falha no gravador do ensaio: {exc}",
+                    "code": "SESSION_WRITER_ERROR",
+                })
+            except OSError:
+                pass
         finally:
             if file is not None:
                 file.close()
@@ -165,6 +220,21 @@ class SessionRecorder:
         self._queue.put(("stop", None))
         if self._thread is not None:
             self._thread.join(timeout)
-        self._write_json("metadata.json", self.metadata)
-        self._active = False
+        if self._thread is not None and self._thread.is_alive():
+            self._error = TimeoutError("O gravador do ensaio nao encerrou no prazo.")
+            try:
+                self._append_event_now({
+                    "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                    "source": "SESSION",
+                    "severity": "ERROR",
+                    "message": str(self._error),
+                    "code": "SESSION_WRITER_TIMEOUT",
+                })
+            except OSError:
+                pass
+        try:
+            self._write_json("metadata.json", self.metadata)
+        finally:
+            with self._lock:
+                self._active = False
         return self.path

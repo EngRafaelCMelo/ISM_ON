@@ -35,3 +35,17 @@ def test_session_isolated_and_simulation_is_explicit(tmp_path):
     assert rows[0]["P1_raw"] == "5"
     assert rows[0]["dp_calculated"] == "3"
     assert "TEST" in (tmp_path / "ensaios" / path.split("\\")[-1] / "events.log").read_text(encoding="utf-8")
+
+
+def test_session_rejects_mixed_real_and_simulated_samples(tmp_path):
+    recorder = SessionRecorder(str(tmp_path / "ensaios"))
+    path = recorder.start(
+        session_id="sim-1", sample_name="amostra", operator="op", notes="",
+        test_type="Coreflooding", parameters={}, sensor_config=[], calibration={},
+        source="SIMULATED", simulated=True,
+    )
+    recorder.record({"source": "REAL", "simulated": False, "ts": "now"})
+    recorder.stop()
+    rows = list(csv.DictReader(open(path + "/measurements.csv", encoding="utf-8", newline="")))
+    assert rows == []
+    assert "SESSION_SOURCE_MISMATCH" in open(path + "/events.log", encoding="utf-8").read()

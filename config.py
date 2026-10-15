@@ -109,21 +109,58 @@ def validate_config(config: Dict[str, Any]) -> None:
         device = devices.get(device_name, {})
         if not isinstance(device, dict):
             raise ValueError(f"Configuracao invalida para {device_name}.")
-        if "baudrate" in device and int(device["baudrate"]) <= 0:
-            raise ValueError(f"baudrate invalido para {device_name}.")
+        if "baudrate" in device:
+            try:
+                baudrate = int(device["baudrate"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"baudrate invalido para {device_name}.") from exc
+            if baudrate <= 0:
+                raise ValueError(f"baudrate invalido para {device_name}.")
         if "port" in device and not str(device["port"]).strip():
             raise ValueError(f"porta invalida para {device_name}.")
         for timeout_key in ("timeout_s", "stale_after_s"):
-            if timeout_key in device and float(device[timeout_key]) <= 0:
-                raise ValueError(f"{timeout_key} invalido para {device_name}.")
+            if timeout_key in device:
+                try:
+                    timeout_value = float(device[timeout_key])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"{timeout_key} invalido para {device_name}.") from exc
+                if not math.isfinite(timeout_value) or timeout_value <= 0:
+                    raise ValueError(f"{timeout_key} invalido para {device_name}.")
 
-    for section_name in ("auth", "calibration", "sessions", "plot"):
+    for section_name in ("auth", "calibration", "sessions", "plot", "events"):
         section = config.get(section_name, {})
         if not isinstance(section, dict):
             raise ValueError(f"{section_name} deve ser um objeto JSON.")
     plot = config.get("plot", {})
     if "max_history_s" in plot and (not math.isfinite(float(plot["max_history_s"])) or float(plot["max_history_s"]) <= 0):
         raise ValueError("plot.max_history_s deve ser finito e maior que zero.")
+
+    parameters = config.get("parameters", {})
+    if not isinstance(parameters, dict):
+        raise ValueError("parameters deve ser um objeto JSON.")
+    positive_parameters = (
+        "diameter_m", "length_m", "viscosity_pa_s",
+        "vref_cm3", "vcell_cm3", "vu_cm3", "vd_cm3",
+    )
+    for key in positive_parameters:
+        if key in parameters:
+            try:
+                value = float(parameters[key])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Parametro invalido: {key}.") from exc
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"Parametro deve ser maior que zero: {key}.")
+    for key in ("flow_m3s_manual", "temperature_c_manual"):
+        if key in parameters:
+            try:
+                value = float(parameters[key])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Parametro invalido: {key}.") from exc
+            if not math.isfinite(value) or (key == "flow_m3s_manual" and value < 0):
+                raise ValueError(f"Parametro invalido: {key}.")
+    model = parameters.get("test_model")
+    if model is not None and model not in {"incompressible_liquid", "gas_pulse_decay"}:
+        raise ValueError(f"Modelo de ensaio nao suportado: {model}.")
 
 
 def device_config(config: Dict[str, Any], name: str) -> Dict[str, Any]:

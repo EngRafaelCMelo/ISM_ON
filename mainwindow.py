@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import time
+import copy
 from collections import deque
 from typing import Any, Dict, List, Optional
 
@@ -15,8 +16,9 @@ from PyQt5.QtCore import QDate, QTime, QTimer, pyqtSignal
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QAction, QMainWindow, QMessageBox
 
-from calc import permeability_darcy
+from calc import differential_pressures, permeability_darcy
 from operation_state import OperationState
+from config import save_config
 from units import pressure_from_pa, pressure_to_pa
 
 
@@ -95,11 +97,18 @@ class TelaPrincipal(QMainWindow):
         self.current_pump_flow_m3s: Optional[float] = None
         self.current_pump_raw = "-"
         self.current_pump_status = "DISCONNECTED"
+        self.current_pump_message = "Bomba desconectada"
         self.current_pump_ts_ms: Optional[int] = None
         self.current_oven_temp_c: Optional[float] = None
         self.current_oven_raw = "-"
         self.current_oven_status = "DISCONNECTED"
+        self.current_oven_message = "Estufa desconectada"
         self.current_oven_ts_ms: Optional[int] = None
+
+        self._params_dialog = None
+        self.last_porosity_percent: Optional[float] = None
+        self.last_permeability_mD: Optional[float] = None
+        self._initialize_parameter_widgets()
 
         plot_cfg = self.config_data.get("plot", {}) if isinstance(self.config_data, dict) else {}
         self.max_history_s = float(plot_cfg.get("max_history_s", 3600.0))
@@ -146,7 +155,7 @@ class TelaPrincipal(QMainWindow):
 
     def _setup_plots(self):
         colors = ["b", "r", "g", "m", "c", "y"]
-        for text in ("15min", "1h", "Ensaio completo"):
+        for text in ("5min", "15min", "1h", "Ensaio completo"):
             if self.tempo_analise.findText(text) < 0:
                 self.tempo_analise.addItem(text)
         self.widget_plot_pressao.setBackground("w")
@@ -231,8 +240,26 @@ class TelaPrincipal(QMainWindow):
         self.set_operation_state(OperationState.STOPPED)
 
     def show_error(self, message: str):
+        self._invalidate_current_data()
         self.statusbar.showMessage(str(message), 10000)
         QMessageBox.critical(self, "Erro", str(message))
+
+    def _invalidate_current_data(self):
+        """Clear current readings after a source failure; history remains intact."""
+        self.latest_ts_ms = None
+        for name in self.channel_names:
+            self.latest_eng_raw[name] = None
+            self.latest_eng_corr[name] = None
+            self.channel_status[name] = "INVALID"
+            widget = self.channel_widgets.get(name)
+            if widget is not None:
+                widget.setText("OFFLINE")
+        self.current_dp_measured_pa = None
+        self.current_dp_calculated_pa = None
+        self.dpcalc.setText("--")
+        self.DP.setText("OFFLINE")
+        self.lbl_pmean.setText("--")
+        self.lbl_sigma_eff.setText("--")
 
     def show_event(self, event):
         self.statusbar.showMessage(f"[{event.severity}] {event.source}: {event.message}", 15000)
@@ -250,20 +277,36 @@ class TelaPrincipal(QMainWindow):
             QMessageBox.warning(self, "Aquisicao ativa", "Pare a aquisicao antes de alterar a calibracao.")
             return
         from calibration_dialog import CalibrationDialog
-        dialog = CalibrationDialog(self, self.channel_names, self.get_raw_by_name, self.get_corr_by_name, self.calibration_path)
+        parameters = self.parameter_snapshot()
+        dialog = CalibrationDialog(
+            self,
+            self.channel_names,
+            self.get_raw_by_name,
+            self.get_corr_by_name,
+            self.calibration_path,
+            initial_volumes=parameters,
+            on_volumes_saved=lambda values: self.apply_parameters(values),
+        )
         dialog.exec_()
 
     def open_parameters(self):
+        if not self._is_admin():
+            return
+        if self.operation_state != OperationState.STOPPED:
+            QMessageBox.warning(self, "Aquisicao ativa", "Pare a aquisicao antes de alterar os parametros.")
+            return
         from params_dialog import ParamsDialog
         dialog = ParamsDialog(
-            self, self.get_corr_by_name, lambda **results: None,
+            self, self.get_pressure_bar_by_name, self._apply_calculation_results,
             self.upstream_channel or "", self.downstream_channel or "", self.parameter_snapshot()
         )
+        self._params_dialog = dialog
         if dialog.exec_() == dialog.Accepted:
             try:
                 self.apply_parameters(dialog.values())
-            except ValueError as exc:
+            except (ValueError, OSError) as exc:
                 QMessageBox.critical(self, "Parametros", str(exc))
+        self._params_dialog = None
 
     def open_serial_settings(self):
         if not self._is_admin():
@@ -286,19 +329,72 @@ class TelaPrincipal(QMainWindow):
             "diameter_m": float(self.input_d.value()), "length_m": float(self.input_L.value()),
             "viscosity_pa_s": viscosity, "flow_m3s_manual": float(self.input_q.value()),
             "temperature_c_manual": float(self.input_temp_manual.value()),
+            "vref_cm3": float(self.config_data.get("parameters", {}).get("vref_cm3", 10.0)),
+            "vcell_cm3": float(self.config_data.get("parameters", {}).get("vcell_cm3", 20.0)),
+            "vu_cm3": float(self.config_data.get("parameters", {}).get("vu_cm3", 10.0)),
+            "vd_cm3": float(self.config_data.get("parameters", {}).get("vd_cm3", 10.0)),
             "upstream_channel": self.upstream_channel, "downstream_channel": self.downstream_channel,
             "differential_channel": self.differential_channel, "fluid_model": self.fluid_model,
+            "test_model": self.fluid_model,
         }
 
     def apply_parameters(self, values: Dict[str, Any]):
+        # Primeiro monta e valida um candidato. Assim uma configuracao
+        # invalida nao deixa a UI parcialmente atualizada.
+        updated = copy.deepcopy(self.config_data)
+        parameters = updated.setdefault("parameters", {})
+        for key in (
+            "diameter_m", "length_m", "viscosity_pa_s", "flow_m3s_manual",
+            "temperature_c_manual", "vref_cm3", "vcell_cm3", "vu_cm3", "vd_cm3",
+        ):
+            if key in values:
+                parameters[key] = float(values[key])
+        candidate_upstream = values.get("upstream_channel", self.upstream_channel)
+        candidate_downstream = values.get("downstream_channel", self.downstream_channel)
+        candidate_model = str(values.get("test_model", self.fluid_model))
+        parameters["test_model"] = candidate_model
+        permeability = updated.setdefault("calculations", {}).setdefault("permeability", {})
+        permeability["upstream_channel"] = candidate_upstream
+        permeability["downstream_channel"] = candidate_downstream
+        permeability["differential_channel"] = self.differential_channel
+        permeability["fluid_model"] = candidate_model
+        save_config(self.config_path, updated)
+
         for key, widget in (("diameter_m", self.input_d), ("length_m", self.input_L),
                             ("flow_m3s_manual", self.input_q), ("temperature_c_manual", self.input_temp_manual)):
             if key in values:
                 widget.setValue(float(values[key]))
         if "viscosity_pa_s" in values:
             self.input_mu.setValue(float(values["viscosity_pa_s"]))
-        self.upstream_channel = values.get("upstream_channel", self.upstream_channel)
-        self.downstream_channel = values.get("downstream_channel", self.downstream_channel)
+        self.upstream_channel = candidate_upstream
+        self.downstream_channel = candidate_downstream
+        self.fluid_model = candidate_model
+        self.config_data.clear()
+        self.config_data.update(updated)
+        self.calculation_config = copy.deepcopy(updated.get("calculations", {}))
+
+    def _initialize_parameter_widgets(self):
+        parameters = self.config_data.get("parameters", {}) if isinstance(self.config_data, dict) else {}
+        defaults = {
+            "diameter_m": 0.0254, "length_m": 0.05, "viscosity_pa_s": 0.001,
+            "flow_m3s_manual": 0.0, "temperature_c_manual": 25.0,
+        }
+        defaults.update({key: value for key, value in parameters.items() if key in defaults})
+        for key, widget in (
+            ("diameter_m", self.input_d), ("length_m", self.input_L),
+            ("viscosity_pa_s", self.input_mu), ("flow_m3s_manual", self.input_q),
+            ("temperature_c_manual", self.input_temp_manual),
+        ):
+            try:
+                widget.setValue(float(defaults[key]))
+            except (TypeError, ValueError):
+                pass
+
+    def _apply_calculation_results(self, **results):
+        if results.get("phi_percent") is not None:
+            self.last_porosity_percent = float(results["phi_percent"])
+        if results.get("k_mD") is not None:
+            self.last_permeability_mD = float(results["k_mD"])
 
     def _toggle_session(self):
         (self.stop_session_requested if self.session_active else self.start_session_requested).emit()
@@ -324,13 +420,14 @@ class TelaPrincipal(QMainWindow):
         self.current_pump_raw = str(text); self._refresh_device_labels()
 
     def update_pump_status(self, text: str):
-        self.current_pump_status = str(text); self._refresh_device_labels()
+        self.current_pump_message = str(text); self._refresh_device_labels()
 
     def update_pump_state(self, text: str):
         self.current_pump_status = str(text); self._refresh_device_labels()
 
     def update_pump_error(self, text: str):
-        self.current_pump_status = "ERROR"; self.current_pump_raw = str(text); self._refresh_device_labels()
+        self.current_pump_status = "ERROR"; self.current_pump_message = str(text)
+        self.current_pump_raw = str(text); self._refresh_device_labels()
 
     def update_oven_temp(self, value_c: float):
         try:
@@ -347,13 +444,14 @@ class TelaPrincipal(QMainWindow):
         self.current_oven_raw = str(text); self._refresh_device_labels()
 
     def update_oven_status(self, text: str):
-        self.current_oven_status = str(text); self._refresh_device_labels()
+        self.current_oven_message = str(text); self._refresh_device_labels()
 
     def update_oven_state(self, text: str):
         self.current_oven_status = str(text); self._refresh_device_labels()
 
     def update_oven_error(self, text: str):
-        self.current_oven_status = "ERROR"; self.current_oven_raw = str(text); self._refresh_device_labels()
+        self.current_oven_status = "ERROR"; self.current_oven_message = str(text)
+        self.current_oven_raw = str(text); self._refresh_device_labels()
 
     def _age_text(self, timestamp_ms: Optional[int]) -> str:
         if timestamp_ms is None:
@@ -361,9 +459,9 @@ class TelaPrincipal(QMainWindow):
         return f"ha {max(0.0, time.time() - timestamp_ms / 1000.0):.1f}s"
 
     def _refresh_device_labels(self):
-        self.lbl_pump_status.setText(f"Estado: {self.current_pump_status}\nUltima leitura: {self._age_text(self.current_pump_ts_ms)}")
+        self.lbl_pump_status.setText(f"Estado: {self.current_pump_status}\n{self.current_pump_message}\nUltima leitura: {self._age_text(self.current_pump_ts_ms)}")
         self.lbl_pump_raw.setText(f"Ultima mensagem: {self.current_pump_raw}")
-        self.lbl_oven_status.setText(f"Estado: {self.current_oven_status}\nUltima leitura: {self._age_text(self.current_oven_ts_ms)}")
+        self.lbl_oven_status.setText(f"Estado: {self.current_oven_status}\n{self.current_oven_message}\nUltima leitura: {self._age_text(self.current_oven_ts_ms)}")
         self.llbl_oven_raw.setText(f"Ultima mensagem: {self.current_oven_raw}")
 
     def _is_fresh(self, timestamp_ms: Optional[int]) -> bool:
@@ -421,7 +519,13 @@ class TelaPrincipal(QMainWindow):
         return value if math.isfinite(value) else None
 
     def _time_window_s(self) -> Optional[float]:
-        text = self.tempo_analise.currentText().lower().replace(" ", "")
+        text = self.tempo_analise.currentText().lower().strip()
+        if "ensaio" in text or "completo" in text:
+            return None
+        text = text.replace(" ", "")
+        text = text.replace("segundos", "s").replace("segundo", "s")
+        text = text.replace("minutos", "min").replace("minuto", "min")
+        text = text.replace("horas", "h").replace("hora", "h")
         match = re.match(r"([0-9]+(?:\.[0-9]+)?)(s|min|h)$", text)
         if match:
             return float(match.group(1)) * {"s": 1, "min": 60, "h": 3600}[match.group(2)]
@@ -453,7 +557,17 @@ class TelaPrincipal(QMainWindow):
 
     def update_data(self, payload):
         channels = self._payload_channels(payload)
-        self.latest_ts_ms = int(payload.get("timestamp_ms", time.time() * 1000))
+        timestamp = payload.get("timestamp_ms")
+        try:
+            timestamp_float = float(timestamp)
+            self.latest_ts_ms = int(timestamp_float) if math.isfinite(timestamp_float) else None
+        except (TypeError, ValueError):
+            self.latest_ts_ms = None
+        if self.latest_ts_ms is None:
+            # Workers always provide a source timestamp. Keep malformed
+            # external payloads from crashing the UI, but do not pretend that
+            # the fallback is an acquisition timestamp.
+            self.latest_ts_ms = int(time.time() * 1000)
         if self.session_plot_start_ms is None: self.session_plot_start_ms = self.latest_ts_ms
         elapsed_s = max(0.0, (self.latest_ts_ms - self.session_plot_start_ms) / 1000.0)
         for name in self.channel_names:
@@ -471,20 +585,30 @@ class TelaPrincipal(QMainWindow):
             widget.style().unpolish(widget); widget.style().polish(widget)
 
         unit = self.channel_units.get(self.upstream_channel or self.differential_channel or "DP", "bar")
+        self.current_dp_display_unit = unit
+        self.widget_plot_pressao_dp.setLabel("left", "Pressao diferencial", units=unit)
         upstream = self.latest_eng_corr.get(self.upstream_channel); downstream = self.latest_eng_corr.get(self.downstream_channel)
-        self.current_dp_calculated_pa = None
-        if upstream is not None and downstream is not None:
+        measured = self.latest_eng_corr.get(self.differential_channel)
+        measured_status = self.channel_status.get(self.differential_channel, "INVALID")
+        dp_values = differential_pressures(
+            measured, self.channel_units.get(self.differential_channel, unit),
+            upstream, self.channel_units.get(self.upstream_channel, unit),
+            downstream, self.channel_units.get(self.downstream_channel, unit),
+            measured_status=measured_status,
+            upstream_status=self.channel_status.get(self.upstream_channel, "INVALID"),
+            downstream_status=self.channel_status.get(self.downstream_channel, "INVALID"),
+        )
+        self.current_dp_measured_pa = dp_values["measured_pa"]
+        self.current_dp_calculated_pa = dp_values["calculated_pa"]
+        if self.current_dp_calculated_pa is not None:
             upstream_pa = pressure_to_pa(upstream, self.channel_units.get(self.upstream_channel, unit))
             downstream_pa = pressure_to_pa(downstream, self.channel_units.get(self.downstream_channel, unit))
-            self.current_dp_calculated_pa = upstream_pa - downstream_pa
             dp_display = pressure_from_pa(self.current_dp_calculated_pa, unit)
             self.dpcalc.setText(f"{dp_display:.2f} {unit}")
             self.lbl_pmean.setText(f"{pressure_from_pa((upstream_pa + downstream_pa) / 2.0, unit):.2f} {unit}")
             self.lbl_sigma_eff.setText(f"{pressure_from_pa(self.current_dp_calculated_pa / 2.0, unit):.2f} {unit}")
         else:
             self.dpcalc.setText("--"); self.lbl_pmean.setText("--"); self.lbl_sigma_eff.setText("--")
-        measured = self.latest_eng_corr.get(self.differential_channel); measured_status = self.channel_status.get(self.differential_channel, "INVALID")
-        self.current_dp_measured_pa = pressure_to_pa(measured, self.channel_units.get(self.differential_channel, unit)) if measured is not None and measured_status == "OK" else None
         self.DP.setText(f"{measured:.2f} {self.channel_units.get(self.differential_channel, unit)}" if self.current_dp_measured_pa is not None else "OFFLINE")
         self.dp_measured.append(pressure_from_pa(self.current_dp_measured_pa, unit) if self.current_dp_measured_pa is not None else np.nan)
         self.dp_calculated.append(pressure_from_pa(self.current_dp_calculated_pa, unit) if self.current_dp_calculated_pa is not None else np.nan)
@@ -492,6 +616,8 @@ class TelaPrincipal(QMainWindow):
         temperature = self.get_current_temperature(); self.temp_t.append(elapsed_s); self.temp_y.append(temperature if temperature is not None else np.nan)
         if temperature is not None: self.lbl_temp.setText(f"{temperature:.2f} C")
         k_value = self.calculate_permeability_realtime(); self.k_t.append(elapsed_s); self.k_y.append(k_value if k_value is not None else np.nan)
+        if self._params_dialog is not None:
+            self._params_dialog.feed_decay_sample(self.latest_ts_ms)
         for name in self.pressure_curves:
             value = self.latest_eng_corr.get(name); self.y[name].append(value if value is not None else np.nan)
         self._refresh_all_plots()
@@ -505,6 +631,24 @@ class TelaPrincipal(QMainWindow):
             "permeability_mD": float(self.k_y[-1]) if self.k_y and np.isfinite(self.k_y[-1]) else None,
         }
 
-    def get_raw_by_name(self, name: str): return self.latest_eng_raw.get(name)
+    def get_raw_by_name(self, name: str):
+        if self.channel_status.get(name) != "OK" or not self._is_fresh(self.latest_ts_ms):
+            return None
+        value = self.latest_eng_raw.get(name)
+        if value is None:
+            return None
+        unit = self.channel_units.get(name, "bar")
+        return pressure_from_pa(pressure_to_pa(value, unit), "bar")
 
-    def get_corr_by_name(self, name: str): return self.latest_eng_corr.get(name)
+    def get_corr_by_name(self, name: str):
+        if self.channel_status.get(name) != "OK" or not self._is_fresh(self.latest_ts_ms):
+            return None
+        value = self.latest_eng_corr.get(name)
+        if value is None:
+            return None
+        unit = self.channel_units.get(name, "bar")
+        return pressure_from_pa(pressure_to_pa(value, unit), "bar")
+
+    def get_pressure_bar_by_name(self, name: str):
+        """Return a current valid channel value in bar for scientific dialogs."""
+        return self.get_corr_by_name(name)

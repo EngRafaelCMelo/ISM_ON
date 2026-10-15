@@ -9,7 +9,8 @@
 - `pump_worker.py` / `oven_worker.py`: threads seriais, parser, estado e reconexao com backoff.
 - `units.py`, `calc.py`: conversoes SI e calculos sem dependencia da UI.
 - `calibration_store.py`, `config.py`, `auth.py`: persistencia atomica e validada.
-- `session_manager.py`, `events.py`: rastreabilidade assincrona de ensaio e eventos.
+- `session_manager.py`, `events.py`: rastreabilidade assincrona de ensaio, eventos por ensaio e log global JSONL.
+- `config.json`/`ParamsDialog`: origem canonica dos parametros de amostra, fluido, volumes, fontes e modelo do ensaio; alteracoes administrativas sao atomicas e criam backup.
 
 ## Estado da aquisicao
 
@@ -30,6 +31,8 @@ Cada amostra possui `ts`, `timestamp_ms`, `source`, `simulated` e `channels`. Ca
 ## DP e tempo
 
 O canal diferencial configurado representa `DP medido`. `DP calculado` e a diferenca em Pa entre os canais configurados como montante e jusante. Ambos sao armazenados, exibidos e desenhados em curvas distintas.
+
+`calc.differential_pressures` rejeita estados invalidos e nunca reutiliza o ultimo valor como se fosse uma leitura atual. A fonte usada pela permeabilidade e selecionavel na interface.
 
 O eixo X usa `timestamp_ms` da fonte e tempo decorrido desde a primeira amostra da partida. O historico e limitado por `plot.max_history_s` e a renderizacao e reduzida a no maximo 2000 pontos por curva.
 

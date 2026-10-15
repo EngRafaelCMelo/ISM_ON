@@ -46,10 +46,11 @@ DP medido e DP calculado permanecem separados na tela e no CSV. A fonte usada na
 
 ## Persistencia
 
-- `config.json`: canais, faixas, unidades, mapeamento, dispositivos e janelas de grafico.
+- `config.json`: canais, faixas, unidades, mapeamento, dispositivos, janelas de grafico e parametros cientificos canonicos.
 - `calibration.json`: coeficientes e volumes; salvamentos sao atomicos e criam backup.
 - `users.json`: usuarios locais e perfis `admin`/`operator`.
-- `ensaios/<data>_<amostra>_<id>/`: `metadata.json`, `measurements.csv` e `events.log`.
+- `ensaios/<data>_<amostra>_<id>/`: `metadata.json`, `measurements.csv` e `events.log`; a origem `REAL`/`SIMULATED` e validada por amostra.
+- `logs/events.log`: eventos e alarmes globais em JSON Lines, com timestamp, origem, severidade e codigo.
 - `logs/`: CSV legado do worker DAQ, mantendo mA, bruto, calibrado e status.
 
 No executavel empacotado, `config.json` e os dados locais sao copiados para a pasta `data/` ao lado do `.exe`, evitando gravacao em `_MEIPASS` temporario.
@@ -61,6 +62,8 @@ python -m pytest -q
 python -m py_compile operation_state.py auth.py events.py session_manager.py session_dialog.py serial_settings_dialog.py acquisition_controller.py mainwindow.py main2.py
 pyinstaller --clean --noconfirm SupervisorioISM.spec
 ```
+
+A suíte local possui 30 testes automatizados e nao depende de NI-DAQmx nem de portas seriais reais.
 
 Os testes nao dependem de NI-DAQ ou portas seriais reais. O build Windows ainda precisa ser validado no computador de operacao.
 

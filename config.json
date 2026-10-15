@@ -29,6 +29,18 @@
   "simulation": {
     "enabled": false
   },
+  "parameters": {
+    "diameter_m": 0.0254,
+    "length_m": 0.05,
+    "viscosity_pa_s": 0.001,
+    "flow_m3s_manual": 0.0,
+    "temperature_c_manual": 25.0,
+    "vref_cm3": 10.0,
+    "vcell_cm3": 20.0,
+    "vu_cm3": 10.0,
+    "vd_cm3": 10.0,
+    "test_model": "incompressible_liquid"
+  },
   "auth": {
     "users_path": "users.json"
   },
@@ -37,6 +49,9 @@
   },
   "sessions": {
     "folder": "ensaios"
+  },
+  "events": {
+    "log_path": "logs/events.log"
   },
   "plot": {
     "max_history_s": 3600

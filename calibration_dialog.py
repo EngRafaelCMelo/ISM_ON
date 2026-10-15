@@ -35,6 +35,8 @@ class CalibrationDialog(QDialog):
         get_raw_by_name: Callable[[str], Optional[float]],
         get_corr_by_name: Callable[[str], Optional[float]],
         calibration_path: str = "calibration.json",
+        initial_volumes: Optional[Dict[str, float]] = None,
+        on_volumes_saved: Optional[Callable[[Dict[str, float]], None]] = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Modo Calibração")
@@ -45,6 +47,8 @@ class CalibrationDialog(QDialog):
         self.get_raw_by_name = get_raw_by_name
         self.get_corr_by_name = get_corr_by_name
         self.calibration_path = calibration_path
+        self.initial_volumes = dict(initial_volumes or {})
+        self.on_volumes_saved = on_volumes_saved
 
         self.cal = load_calibration(self.calibration_path)
         for n in self.channel_names:
@@ -168,10 +172,13 @@ class CalibrationDialog(QDialog):
         self.vd = QDoubleSpinBox(); self.vd.setRange(0.001, 1e9); self.vd.setDecimals(3)
 
         vols = self.cal.get("volumes", {})
-        self.vref.setValue(float(vols.get("Vref_cm3", 10.0)))
-        self.vcell.setValue(float(vols.get("Vcell_cm3", 20.0)))
-        self.vu.setValue(float(vols.get("Vu_cm3", 10.0)))
-        self.vd.setValue(float(vols.get("Vd_cm3", 10.0)))
+        # Os nomes da configuracao sao a origem canonica dos parametros
+        # cientificos. O bloco legado de calibration.json e usado apenas como
+        # fallback para instalacoes antigas.
+        self.vref.setValue(float(self.initial_volumes.get("vref_cm3", vols.get("Vref_cm3", 10.0))))
+        self.vcell.setValue(float(self.initial_volumes.get("vcell_cm3", vols.get("Vcell_cm3", 20.0))))
+        self.vu.setValue(float(self.initial_volumes.get("vu_cm3", vols.get("Vu_cm3", 10.0))))
+        self.vd.setValue(float(self.initial_volumes.get("vd_cm3", vols.get("Vd_cm3", 10.0))))
 
         f2.addRow("Vref (cm³):", self.vref)
         f2.addRow("Vcell vazio (cm³):", self.vcell)
@@ -313,6 +320,19 @@ class CalibrationDialog(QDialog):
         self.cal["volumes"]["Vu_cm3"] = float(self.vu.value())
         self.cal["volumes"]["Vd_cm3"] = float(self.vd.value())
         save_calibration(self.calibration_path, self.cal)
+        values = {
+            "vref_cm3": float(self.vref.value()),
+            "vcell_cm3": float(self.vcell.value()),
+            "vu_cm3": float(self.vu.value()),
+            "vd_cm3": float(self.vd.value()),
+        }
+        if self.on_volumes_saved is not None:
+            try:
+                self.on_volumes_saved(values)
+            except Exception as error:
+                QMessageBox.critical(
+                    self, "Volumes", f"Calibracao salva, mas parametros nao foram atualizados:\n{error}"
+                )
         self.refresh_metadata_label()
         QMessageBox.information(self, "Volumes", "Volumes salvos em calibration.json")
 
@@ -331,3 +351,8 @@ class CalibrationDialog(QDialog):
 
         msg = "Leituras RAW atuais (bar):\n\n" + "\n".join([f"{n}: {v:.5f}" for n, v in values])
         QMessageBox.information(self, "Validação - RAW", msg)
+
+    def closeEvent(self, event):
+        if getattr(self, "timer", None) is not None:
+            self.timer.stop()
+        super().closeEvent(event)

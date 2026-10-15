@@ -63,15 +63,21 @@ class SimulationWorker(QObject):
             return
         elapsed = time.monotonic() - self._started_at
         channel_payload = {}
+        raw_values = []
+        corrected_values = []
+        statuses = []
         for index, channel in enumerate(self._channels):
             lrv = float(channel["lrv"])
             urv = float(channel["urv"])
             if channel["name"] == "DP":
-                value = (urv - lrv) * 0.10 + (urv - lrv) * 0.01 * math.sin(elapsed)
+                value = lrv + (urv - lrv) * (0.10 + 0.01 * math.sin(elapsed))
             else:
-                value = (urv - lrv) * (0.20 + 0.02 * math.sin(elapsed + index))
-            value = max(lrv, min(urv, value + lrv))
+                value = lrv + (urv - lrv) * (0.20 + 0.02 * math.sin(elapsed + index))
+            value = max(lrv, min(urv, value))
             current = 4.0 + 16.0 * (value - lrv) / (urv - lrv)
+            raw_values.append(value)
+            corrected_values.append(value)
+            statuses.append("OK")
             channel_payload[channel["name"]] = {
                 "mA": current,
                 "eng_raw": value,
@@ -83,7 +89,11 @@ class SimulationWorker(QObject):
         self.data.emit(
             {
                 "ts": now.isoformat(timespec="milliseconds"),
-                "timestamp_ms": int(time.time() * 1000),
+                "timestamp_ms": int(now.timestamp() * 1000),
+                "mA": [item["mA"] for item in channel_payload.values()],
+                "eng_raw": raw_values,
+                "eng": corrected_values,
+                "status": statuses,
                 "channels": channel_payload,
                 "source": "SIMULATED",
                 "simulated": True,

@@ -6,9 +6,43 @@ import math
 
 import numpy as np
 
+from units import pressure_to_pa
+
 
 DARCY_M2 = 9.869233e-13
 MILLI_DARCY_M2 = 9.869233e-16
+
+
+def differential_pressures(
+    measured_value,
+    measured_unit: str,
+    upstream_value,
+    upstream_unit: str,
+    downstream_value,
+    downstream_unit: str,
+    measured_status: str = "OK",
+    upstream_status: str = "OK",
+    downstream_status: str = "OK",
+) -> dict:
+    """Keep transducer DP and Pu-Pd DP as distinct SI values.
+
+    Invalid channels return ``None`` instead of reusing a previous sample.
+    The UI can choose either returned value for a downstream calculation.
+    """
+    measured_pa = None
+    if measured_status == "OK" and measured_value is not None:
+        measured_pa = pressure_to_pa(measured_value, measured_unit)
+
+    calculated_pa = None
+    if (
+        upstream_status == "OK" and downstream_status == "OK"
+        and upstream_value is not None and downstream_value is not None
+    ):
+        calculated_pa = (
+            pressure_to_pa(upstream_value, upstream_unit)
+            - pressure_to_pa(downstream_value, downstream_unit)
+        )
+    return {"measured_pa": measured_pa, "calculated_pa": calculated_pa}
 
 
 def bulk_volume_cylinder(d_m: float, L_m: float) -> float:

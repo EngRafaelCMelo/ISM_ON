@@ -7,7 +7,16 @@ from calc import (
     permeability_darcy,
     permeability_pulse_decay,
     porosity_from_p1_p2,
+    differential_pressures,
 )
+
+
+def test_measured_and_calculated_dp_are_distinct_and_invalid_is_not_reused():
+    result = differential_pressures(2, "bar", 10, "bar", 3, "bar")
+    assert result["measured_pa"] == pytest.approx(2e5)
+    assert result["calculated_pa"] == pytest.approx(7e5)
+    invalid = differential_pressures(99, "bar", None, "bar", 3, "bar", upstream_status="INVALID")
+    assert invalid == {"measured_pa": 99e5, "calculated_pa": None}
 
 
 def test_porosity_model_returns_fraction_and_percent():

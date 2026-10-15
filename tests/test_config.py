@@ -35,3 +35,10 @@ def test_config_save_is_atomic_and_creates_backup(tmp_path):
     assert path.exists()
     assert list(tmp_path.glob("config.json.*.bak"))
     assert load_config(str(path))["devices"]["pump"]["port"] == "COM99"
+
+
+def test_config_rejects_non_finite_serial_timeouts():
+    config = load_config("config.json")
+    config["devices"]["pump"]["timeout_s"] = float("nan")
+    with pytest.raises(ValueError):
+        validate_config(config)

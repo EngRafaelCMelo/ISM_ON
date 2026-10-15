@@ -78,7 +78,11 @@ def main():
         )
         window.set_simulation_mode(simulation_mode)
 
-        events = EventManager()
+        events_cfg = config.get("events", {})
+        events_log = resolve_relative_path(
+            config_path, str(events_cfg.get("log_path", "logs/events.log"))
+        )
+        events = EventManager(events_log)
         recorder = SessionRecorder(resolve_relative_path(config_path, str(config.get("sessions", {}).get("folder", "ensaios"))))
 
         def handle_event(event):
@@ -123,6 +127,13 @@ def main():
         pump.state.connect(window.update_pump_state)
         pump.error.connect(window.update_pump_error)
         pump.error.connect(lambda message: events.emit("PUMP", "ERROR", message, "PUMP_ERROR"))
+        pump_state = {"value": None}
+        def handle_pump_state(state):
+            if pump_state["value"] != state:
+                pump_state["value"] = state
+                severity = "ERROR" if state == "ERROR" else ("WARNING" if state in {"STALE", "INVALID"} else "INFO")
+                events.emit("PUMP", severity, f"Estado da bomba: {state}", f"PUMP_{state}")
+        pump.state.connect(handle_pump_state)
         window.btn_pump_connect.clicked.connect(pump.start)
         window.btn_pump_disconnect.clicked.connect(pump.stop)
 
@@ -134,6 +145,13 @@ def main():
         oven.state.connect(window.update_oven_state)
         oven.error.connect(window.update_oven_error)
         oven.error.connect(lambda message: events.emit("OVEN", "ERROR", message, "OVEN_ERROR"))
+        oven_state = {"value": None}
+        def handle_oven_state(state):
+            if oven_state["value"] != state:
+                oven_state["value"] = state
+                severity = "ERROR" if state == "ERROR" else ("WARNING" if state in {"STALE", "INVALID"} else "INFO")
+                events.emit("OVEN", severity, f"Estado da estufa: {state}", f"OVEN_{state}")
+        oven.state.connect(handle_oven_state)
         window.btn_oven_connect.clicked.connect(oven.start)
         window.btn_oven_disconnect.clicked.connect(oven.stop)
 
@@ -183,6 +201,13 @@ def main():
             window.set_session_active(False, path)
             if path:
                 events.emit("SESSION", "INFO", f"Ensaio encerrado em {path}", "SESSION_STOPPED")
+            if recorder.error is not None:
+                events.emit(
+                    "SESSION",
+                    "ERROR",
+                    f"Falha no gravador do ensaio: {recorder.error}",
+                    "SESSION_WRITER_ERROR",
+                )
 
         window.start_session_requested.connect(start_session)
         window.stop_session_requested.connect(stop_session)
@@ -198,7 +223,11 @@ def main():
                 stop_session()
             controller.close()
             pump.stop()
+            if pump.isRunning():
+                pump.wait(2000)
             oven.stop()
+            if oven.isRunning():
+                oven.wait(2000)
 
         app.aboutToQuit.connect(shutdown)
         window.set_operation_state(controller.state)

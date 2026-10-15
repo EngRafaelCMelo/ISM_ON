@@ -27,17 +27,18 @@ Data da base original: 14/10/2026. O projeto foi estabilizado em duas etapas sob
 | E2-01 | Maquina `STOPPED`, `STARTING`, `RUNNING`, `STOPPING`, `ERROR`; `RUNNING` depende do worker. | `operation_state.py`, `acquisition_controller.py`. |
 | E2-02 | Nova `QThread`/worker por partida, stop enfileirado e sem `terminate()`. | `acquisition_controller.py`, teste Qt de start/stop. |
 | E2-03 | Calibracao no menu, leitura atual, captura sem dado desabilitada, confirmacao/backup/timestamp. | `mainwindow.py`, `calibration_dialog.py`. |
-| E2-04 | Parametros editados no dialogo retornam para os campos usados pelos calculos. | `params_dialog.py`, `mainwindow.py`. |
+| E2-04 | Parametros canonicos (geometria, fluido, vazao/temperatura, volumes, modelo e mapeamento) retornam para os calculos e sao persistidos com backup. | `params_dialog.py`, `mainwindow.py`, `config.py`. |
 | E2-05 | DP medido e DP calculado separados em labels, curvas e registros. | `mainwindow.py`, `session_manager.py`. |
 | E2-06 | Portas/baudrate/timeout/stale editaveis; estados e reconexao com backoff. | `serial_settings_dialog.py`, workers seriais. |
 | E2-07 | Graficos usam timestamp, janelas temporais, buffer limitado e downsampling. | `mainwindow.py`. |
 | E2-08 | Ensaio isolado com metadata, CSV, eventos e origem REAL/SIMULATED. | `session_manager.py`, `session_dialog.py`. |
 | E2-09 | Eventos e alarmes centralizados para DAQ, sensores e serial. | `events.py`, `main2.py`. |
 | E2-10 | Login local sem credencial fixa, PBKDF2-SHA256 com salt e perfis. | `auth.py`, `tela_login.py`. |
+| E2-11 | Encerramento serial sem bloquear a UI, validacao de tempos finitos, falhas de worker e log global JSONL resiliente. | `pump_worker.py`, `oven_worker.py`, `serial_utils.py`, `acquisition_controller.py`, `events.py`. |
 
 ## Testes executados
 
-- `python -m pytest -q`: 22 testes aprovados.
+- `python -m pytest -q`: 30 testes aprovados.
 - `python -m py_compile` nos modulos principais: aprovado.
 - Smoke test Qt offscreen: janela, timestamps, curvas DP distintas e modo simulado.
 - Smoke test do controlador: `STARTING -> RUNNING -> STOPPING -> STOPPED`.

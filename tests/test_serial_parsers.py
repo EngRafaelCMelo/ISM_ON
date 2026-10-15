@@ -1,9 +1,12 @@
+import time
+
 import pytest
 
 import oven_worker
 import pump_worker
 from oven_worker import OvenWorker
 from pump_worker import PumpWorker
+from device_state import STALE
 
 
 def test_pump_parser_accepts_valid_and_rejects_incomplete_messages():
@@ -23,3 +26,18 @@ def test_workers_return_cleanly_without_serial_hardware(monkeypatch):
     monkeypatch.setattr(oven_worker, "serial", None)
     PumpWorker().run()
     OvenWorker().run()
+
+
+def test_serial_settings_and_stale_state_are_validated():
+    with pytest.raises(ValueError):
+        PumpWorker(port="", baudrate=9600, timeout_s=1, stale_after_s=3)
+    with pytest.raises(ValueError):
+        PumpWorker(timeout_s=float("nan"))
+    with pytest.raises(ValueError):
+        OvenWorker(stale_after_s=float("inf"))
+    worker = PumpWorker()
+    states = []
+    worker.state.connect(states.append)
+    worker._connected_at = time.monotonic() - 10
+    worker._mark_stale_if_needed()
+    assert states[-1] == STALE
